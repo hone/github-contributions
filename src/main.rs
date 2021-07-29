@@ -4,6 +4,7 @@ use octocrab::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use tokio_stream::StreamExt;
 
 pub enum Contribution {
     IssueId(IssueId),
@@ -15,6 +16,12 @@ pub struct UserWithCompanyInfo {
     pub inner: User,
     pub company: Option<String>,
     pub email: Option<String>,
+}
+
+struct Output {
+    pub user: UserWithCompanyInfo,
+    pub membership: bool,
+    pub contribution_count: usize,
 }
 
 #[tokio::main]
@@ -46,17 +53,32 @@ async fn main() -> anyhow::Result<()> {
 
     let heroku_org = client.orgs("heroku");
 
-    for user in contributions.keys() {
-        let user: UserWithCompanyInfo = client
+    println!(
+        "{0: <20} {1: <10} {2: <10}",
+        "handle", "salesforce", "contributions"
+    );
+    let stream = tokio_stream::iter(contributions);
+    tokio::pin!(stream);
+    let output: Vec<()> = stream
+        .map(|(user, contributions)| async move {
+            let company_user: UserWithCompanyInfo = client
+                .get(format!("/users/{}", user.login), None::<&()>)
+                .await
+                .unwrap();
+        })
+        .collect()
+        .await;
+    for (user, contributions) in contributions.iter() {
+        let company_user: UserWithCompanyInfo = client
             .get(format!("/users/{}", user.login), None::<&()>)
             .await?;
-
         println!(
-            "{0: <10} {1: <10} {2: <10}, {3: <10}",
-            user.inner.login,
-            heroku_org.check_membership(&user.inner.login).await?,
-            user.company.unwrap_or_default(),
-            user.email.unwrap_or_default()
+            "{0: <20} {1: <10} {2: <10}",
+            company_user.inner.login,
+            heroku_org
+                .check_membership(&company_user.inner.login)
+                .await?,
+            contributions.len(),
         );
     }
 
