@@ -51,34 +51,42 @@ async fn main() -> anyhow::Result<()> {
         next_page = page.next;
     }
 
-    let heroku_org = client.orgs("heroku");
+    let stream = tokio_stream::iter(&contributions);
+    tokio::pin!(stream);
+    let output_stream = stream
+        .map(|(user, contributions)| {
+            // create copies so they can be moved inside the async block
+            let cloned_client = client.clone();
+            let heroku_org = client.orgs("heroku");
+
+            async move {
+                let company_user: UserWithCompanyInfo = cloned_client
+                    .get(format!("/users/{}", user.login), None::<&()>)
+                    .await?;
+
+                let membership = heroku_org
+                    .check_membership(&company_user.inner.login)
+                    .await?;
+
+                Result::<_, octocrab::Error>::Ok(Output {
+                    user: company_user,
+                    membership,
+                    contribution_count: contributions.len(),
+                })
+            }
+        })
+        .collect::<Vec<_>>()
+        .await;
+    let outputs: Vec<Output> = futures::future::try_join_all(output_stream).await?;
 
     println!(
         "{0: <20} {1: <10} {2: <10}",
         "handle", "salesforce", "contributions"
     );
-    let stream = tokio_stream::iter(contributions);
-    tokio::pin!(stream);
-    let output: Vec<()> = stream
-        .map(|(user, contributions)| async move {
-            let company_user: UserWithCompanyInfo = client
-                .get(format!("/users/{}", user.login), None::<&()>)
-                .await
-                .unwrap();
-        })
-        .collect()
-        .await;
-    for (user, contributions) in contributions.iter() {
-        let company_user: UserWithCompanyInfo = client
-            .get(format!("/users/{}", user.login), None::<&()>)
-            .await?;
+    for output in outputs {
         println!(
             "{0: <20} {1: <10} {2: <10}",
-            company_user.inner.login,
-            heroku_org
-                .check_membership(&company_user.inner.login)
-                .await?,
-            contributions.len(),
+            output.user.inner.login, output.membership, output.contribution_count
         );
     }
 
