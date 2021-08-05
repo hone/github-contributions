@@ -1,16 +1,13 @@
+use crate::Contribution;
 use octocrab::{
-    models::{issues::Issue, IssueId, User},
-    Page,
+    models::{issues::Issue, pulls::Review, User},
+    params, Page,
 };
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
 
-pub enum Contribution {
-    IssueId(IssueId),
-}
-
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UserWithCompanyInfo {
     #[serde(flatten)]
     pub inner: User,
@@ -21,7 +18,7 @@ pub struct UserWithCompanyInfo {
 pub struct Output {
     pub user: UserWithCompanyInfo,
     pub membership: bool,
-    pub contribution_count: usize,
+    pub contributions: Vec<Contribution>,
 }
 
 pub struct GithubContributionCollector {
@@ -40,32 +37,30 @@ impl GithubContributionCollector {
         })
     }
 
-    pub async fn issues(
+    /// Given an Iterator of `Contribution`s, generate a `Vec<Output>`.
+    pub async fn process_contributions(
         &self,
+        contributions: impl Iterator<Item = Contribution>,
         company_org: impl AsRef<str>,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
     ) -> Result<Vec<Output>, octocrab::Error> {
-        let mut contributions: HashMap<User, Vec<Contribution>> = HashMap::new();
-
-        let issues_page = self
-            .client
-            .issues(repo_org.as_ref(), repo.as_ref())
-            .list()
-            .per_page(5)
-            .send()
-            .await?;
-        process_page(&issues_page, &mut contributions);
-
-        let mut next_page = issues_page.next;
-        while let Some(page) = self.client.get_page::<Issue>(&next_page).await? {
-            process_page(&page, &mut contributions);
-            next_page = page.next;
+        let mut user_contributions: HashMap<User, Vec<Contribution>> = HashMap::new();
+        for contribution in contributions {
+            // the hidden `query` field in `User` can be different so will create different keys in the HashMap
+            let entry = if let Some(user) = user_contributions
+                .keys()
+                .find(|user| user.id == contribution.user().id)
+            {
+                // mutable_borrow_reservation_conflict: https://github.com/rust-lang/rust/issues/59159
+                let key = user.clone();
+                user_contributions.entry(key)
+            } else {
+                user_contributions.entry(contribution.user().clone())
+            };
+            let value = entry.or_insert(Vec::new());
+            (*value).push(contribution);
         }
 
-        let stream = tokio_stream::iter(&contributions);
-        tokio::pin!(stream);
-        let output_stream = stream
+        let output_stream = tokio_stream::iter(user_contributions)
             .map(|(user, contributions)| {
                 // create copies so they can be moved inside the async block
                 let cloned_client = self.client.clone();
@@ -83,7 +78,7 @@ impl GithubContributionCollector {
                     Result::<_, octocrab::Error>::Ok(Output {
                         user: company_user,
                         membership,
-                        contribution_count: contributions.len(),
+                        contributions,
                     })
                 }
             })
@@ -92,11 +87,81 @@ impl GithubContributionCollector {
 
         Ok(futures::future::try_join_all(output_stream).await?)
     }
-}
 
-fn process_page(page: &Page<Issue>, contributions: &mut HashMap<User, Vec<Contribution>>) {
-    for item in page {
-        let user_contributions = contributions.entry(item.user.clone()).or_insert(Vec::new());
-        (*user_contributions).push(Contribution::IssueId(item.id));
+    /// Collect all contributions from issues associated with this repo.
+    pub async fn issues(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Issue>, octocrab::Error> {
+        let page = self
+            .client
+            .issues(repo_org.as_ref(), repo.as_ref())
+            .list()
+            .sort(params::issues::Sort::Created)
+            .direction(params::Direction::Descending)
+            .send()
+            .await?;
+
+        Ok(self.process_pages(page).await?)
+    }
+
+    /// Collect all contributions reviews associated with this repo.
+    pub async fn reviews(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Review>, octocrab::Error> {
+        let pull_handler = self.client.pulls(repo_org.as_ref(), repo.as_ref());
+        let page = pull_handler
+            .list()
+            .sort(params::pulls::Sort::Created)
+            .direction(params::Direction::Descending)
+            .send()
+            .await?;
+
+        let pull_requests = self.process_pages(page).await?;
+
+        let reviews_stream = tokio_stream::iter(pull_requests)
+            .map(|pull_request| {
+                let pull_handler = self.client.pulls(repo_org.as_ref(), repo.as_ref());
+
+                async move {
+                    let page = pull_handler.list_reviews(pull_request.number).await?;
+
+                    Result::<_, octocrab::Error>::Ok(self.process_pages(page).await?)
+                }
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        Ok(futures::future::try_join_all(reviews_stream)
+            .await?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// Get all the items from the current page until the end
+    async fn process_pages<T: DeserializeOwned>(
+        &self,
+        mut page: Page<T>,
+    ) -> Result<Vec<T>, octocrab::Error> {
+        let mut items = Vec::new();
+
+        loop {
+            for item in page.take_items() {
+                items.push(item);
+            }
+
+            let next_page_option = self.client.get_page::<T>(&page.next).await?;
+            if let Some(next_page) = next_page_option {
+                page = next_page;
+            } else {
+                break;
+            }
+        }
+
+        Ok(items)
     }
 }
