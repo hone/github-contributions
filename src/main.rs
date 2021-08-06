@@ -27,8 +27,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     println!(
-        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10}",
-        "handle", "salesforce", "issues", "reviews", "all"
+        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10} {5: <10}",
+        "handle", "salesforce", "issues", "reviews", "commits", "all"
     );
     for output in outputs.iter_mut() {
         output.contributions.retain(|contribution| {
@@ -44,23 +44,34 @@ async fn main() -> anyhow::Result<()> {
     for output in outputs.iter().filter(|output| {
         !output.membership
             && output.contributions.len() > 0
-            && output.user.inner.login != "dependabot[bot]"
+            && output
+                .user
+                .as_ref()
+                .map(|u| u.inner.login != "dependabot[bot]")
+                .unwrap_or(false)
     }) {
         let mut issues_count = 0;
         let mut reviews_count = 0;
+        let mut commits_count = 0;
 
         for contribution in output.contributions.iter() {
             match contribution {
                 Contribution::Issue(_) => issues_count += 1,
                 Contribution::Review(_) => reviews_count += 1,
+                Contribution::Commit(_) => commits_count += 1,
             }
         }
         println!(
-            "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10}",
-            output.user.inner.login,
+            "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10} {5: <10}",
+            output
+                .user
+                .as_ref()
+                .map(|u| u.inner.login.as_str())
+                .unwrap_or("None"),
             output.membership,
             issues_count,
             reviews_count,
+            commits_count,
             output.contributions.len(),
         );
     }

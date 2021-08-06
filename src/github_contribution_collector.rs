@@ -1,6 +1,6 @@
 use crate::Contribution;
 use octocrab::{
-    models::{issues::Issue, pulls::Review, User},
+    models::{issues::Issue, pulls::Review, repos::Commit, User},
     params, Page,
 };
 use serde::{de::DeserializeOwned, Deserialize};
@@ -16,7 +16,7 @@ pub struct UserWithCompanyInfo {
 }
 
 pub struct Output {
-    pub user: UserWithCompanyInfo,
+    pub user: Option<UserWithCompanyInfo>,
     pub membership: bool,
     pub contributions: Vec<Contribution>,
 }
@@ -43,40 +43,45 @@ impl GithubContributionCollector {
         contributions: impl Iterator<Item = Contribution>,
         company_org: impl AsRef<str>,
     ) -> Result<Vec<Output>, octocrab::Error> {
-        let mut user_contributions: HashMap<User, Vec<Contribution>> = HashMap::new();
+        let mut user_contributions: HashMap<Option<User>, Vec<Contribution>> = HashMap::new();
         for contribution in contributions {
             // the hidden `query` field in `User` can be different so will create different keys in the HashMap
             let entry = if let Some(user) = user_contributions
                 .keys()
-                .find(|user| user.id == contribution.user().id)
+                .find(|user| user.as_ref().map(|u| u.id) == contribution.user().map(|u| u.id))
             {
                 // mutable_borrow_reservation_conflict: https://github.com/rust-lang/rust/issues/59159
                 let key = user.clone();
                 user_contributions.entry(key)
             } else {
-                user_contributions.entry(contribution.user().clone())
+                user_contributions.entry(contribution.user().map(|u| u.clone()))
             };
             let value = entry.or_insert(Vec::new());
             (*value).push(contribution);
         }
 
         let output_stream = tokio_stream::iter(user_contributions)
-            .map(|(user, contributions)| {
+            .map(|(maybe_user, contributions)| {
                 // create copies so they can be moved inside the async block
                 let cloned_client = self.client.clone();
                 let heroku_org = self.client.orgs(company_org.as_ref());
 
                 async move {
-                    let company_user: UserWithCompanyInfo = cloned_client
-                        .get(format!("/users/{}", user.login), None::<&()>)
-                        .await?;
+                    let mut membership = false;
+                    let mut maybe_company_user = None;
 
-                    let membership = heroku_org
-                        .check_membership(&company_user.inner.login)
-                        .await?;
+                    if let Some(user) = maybe_user {
+                        let company_user: UserWithCompanyInfo = cloned_client
+                            .get(format!("/users/{}", user.login), None::<&()>)
+                            .await?;
+                        membership = heroku_org
+                            .check_membership(&company_user.inner.login)
+                            .await?;
+                        maybe_company_user = Some(company_user);
+                    }
 
                     Result::<_, octocrab::Error>::Ok(Output {
-                        user: company_user,
+                        user: maybe_company_user,
                         membership,
                         contributions,
                     })
@@ -86,6 +91,23 @@ impl GithubContributionCollector {
             .await;
 
         Ok(futures::future::try_join_all(output_stream).await?)
+    }
+
+    /// Collect all contributions from commits on the default branch associated with this repo.
+    pub async fn commits(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Commit>, octocrab::Error> {
+        let page = self
+            .client
+            .get(
+                format!("/repos/{}/{}/commits", repo_org.as_ref(), repo.as_ref()),
+                None::<&()>,
+            )
+            .await?;
+
+        Ok(self.process_pages(page).await?)
     }
 
     /// Collect all contributions from issues associated with this repo.
