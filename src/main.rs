@@ -22,14 +22,30 @@ async fn main() -> anyhow::Result<()> {
         .await?
         .into_iter()
         .map(|review| review.into());
+    let commits = client
+        .commits(&org, &repo)
+        .await?
+        .into_iter()
+        .map(|commit| commit.into());
     let mut outputs = client
-        .process_contributions(issues.into_iter().chain(reviews.into_iter()), "heroku")
+        .process_contributions(
+            issues
+                .into_iter()
+                .chain(reviews.into_iter())
+                .chain(commits.into_iter()),
+            vec!["heroku", "salesforce", "forcedotcom"],
+        )
         .await?;
 
-    println!(
-        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10} {5: <10}",
-        "handle", "salesforce", "issues", "reviews", "commits", "all"
-    );
+    outputs.retain(|output| {
+        !output.membership
+            && output.contributions.len() > 0
+            && output
+                .user
+                .as_ref()
+                .map(|u| u.inner.login != "dependabot[bot]")
+                .unwrap_or(false)
+    });
     for output in outputs.iter_mut() {
         output.contributions.retain(|contribution| {
             contribution.created_at() >= Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0))
@@ -41,15 +57,12 @@ async fn main() -> anyhow::Result<()> {
             .partial_cmp(&a.contributions.len())
             .unwrap()
     });
-    for output in outputs.iter().filter(|output| {
-        !output.membership
-            && output.contributions.len() > 0
-            && output
-                .user
-                .as_ref()
-                .map(|u| u.inner.login != "dependabot[bot]")
-                .unwrap_or(false)
-    }) {
+
+    println!(
+        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10} {5: <10}",
+        "handle", "salesforce", "issues", "reviews", "commits", "all"
+    );
+    for output in outputs.iter() {
         let mut issues_count = 0;
         let mut reviews_count = 0;
         let mut commits_count = 0;

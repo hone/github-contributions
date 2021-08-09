@@ -1,4 +1,5 @@
 use crate::Contribution;
+use chrono::{offset::Utc, DateTime};
 use octocrab::{
     models::{issues::Issue, pulls::Review, repos::Commit, User},
     params, Page,
@@ -15,6 +16,26 @@ pub struct UserWithCompanyInfo {
     pub email: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CommitWithDate {
+    #[serde(flatten)]
+    pub inner: Commit,
+    pub commit: CommitCommit,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitCommit {
+    pub author: CommitAuthor,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+    pub date: DateTime<Utc>,
+}
+
+#[derive(Debug)]
 pub struct Output {
     pub user: Option<UserWithCompanyInfo>,
     pub membership: bool,
@@ -41,7 +62,7 @@ impl GithubContributionCollector {
     pub async fn process_contributions(
         &self,
         contributions: impl Iterator<Item = Contribution>,
-        company_org: impl AsRef<str>,
+        company_orgs: Vec<impl AsRef<str>>,
     ) -> Result<Vec<Output>, octocrab::Error> {
         let mut user_contributions: HashMap<Option<User>, Vec<Contribution>> = HashMap::new();
         for contribution in contributions {
@@ -64,7 +85,9 @@ impl GithubContributionCollector {
             .map(|(maybe_user, contributions)| {
                 // create copies so they can be moved inside the async block
                 let cloned_client = self.client.clone();
-                let heroku_org = self.client.orgs(company_org.as_ref());
+                let orgs = company_orgs
+                    .iter()
+                    .map(|org| self.client.orgs(org.as_ref()));
 
                 async move {
                     let mut membership = false;
@@ -74,9 +97,10 @@ impl GithubContributionCollector {
                         let company_user: UserWithCompanyInfo = cloned_client
                             .get(format!("/users/{}", user.login), None::<&()>)
                             .await?;
-                        membership = heroku_org
-                            .check_membership(&company_user.inner.login)
-                            .await?;
+                        for org in orgs {
+                            membership = membership
+                                || org.check_membership(&company_user.inner.login).await?;
+                        }
                         maybe_company_user = Some(company_user);
                     }
 
@@ -98,8 +122,8 @@ impl GithubContributionCollector {
         &self,
         repo_org: impl AsRef<str>,
         repo: impl AsRef<str>,
-    ) -> Result<Vec<Commit>, octocrab::Error> {
-        let page = self
+    ) -> Result<Vec<CommitWithDate>, octocrab::Error> {
+        let page: Page<CommitWithDate> = self
             .client
             .get(
                 format!("/repos/{}/{}/commits", repo_org.as_ref(), repo.as_ref()),
