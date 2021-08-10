@@ -34,11 +34,18 @@ async fn main() -> anyhow::Result<()> {
                 .chain(reviews.into_iter())
                 .chain(commits.into_iter()),
             vec!["heroku", "salesforce", "forcedotcom"],
+            vec!["vmware", "pivotal"],
         )
         .await?;
 
+    for output in outputs.iter_mut() {
+        output.contributions.retain(|contribution| {
+            contribution.created_at() >= Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0))
+        });
+    }
     outputs.retain(|output| {
         !output.membership
+            && !output.exclude
             && output.contributions.len() > 0
             && output
                 .user
@@ -46,11 +53,6 @@ async fn main() -> anyhow::Result<()> {
                 .map(|u| u.inner.login != "dependabot[bot]")
                 .unwrap_or(false)
     });
-    for output in outputs.iter_mut() {
-        output.contributions.retain(|contribution| {
-            contribution.created_at() >= Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0))
-        });
-    }
     outputs.sort_by(|a, b| {
         b.contributions
             .len()

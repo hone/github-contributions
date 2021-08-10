@@ -4,6 +4,7 @@ use octocrab::{
     models::{issues::Issue, pulls::Review, repos::Commit, User},
     params, Page,
 };
+use regex::Regex;
 use serde::{de::DeserializeOwned, Deserialize};
 use std::collections::HashMap;
 use tokio_stream::StreamExt;
@@ -39,6 +40,7 @@ pub struct CommitAuthor {
 pub struct Output {
     pub user: Option<UserWithCompanyInfo>,
     pub membership: bool,
+    pub exclude: bool,
     pub contributions: Vec<Contribution>,
 }
 
@@ -63,6 +65,7 @@ impl GithubContributionCollector {
         &self,
         contributions: impl Iterator<Item = Contribution>,
         company_orgs: Vec<impl AsRef<str>>,
+        exclude_orgs: Vec<impl AsRef<str> + Clone>,
     ) -> Result<Vec<Output>, octocrab::Error> {
         let mut user_contributions: HashMap<Option<User>, Vec<Contribution>> = HashMap::new();
         for contribution in contributions {
@@ -88,18 +91,58 @@ impl GithubContributionCollector {
                 let orgs = company_orgs
                     .iter()
                     .map(|org| self.client.orgs(org.as_ref()));
+                let exclude_orgs_clone = exclude_orgs.clone();
 
                 async move {
                     let mut membership = false;
+                    let mut exclude = false;
                     let mut maybe_company_user = None;
 
                     if let Some(user) = maybe_user {
-                        let company_user: UserWithCompanyInfo = cloned_client
+                        let company_user: UserWithCompanyInfo = match cloned_client
                             .get(format!("/users/{}", user.login), None::<&()>)
-                            .await?;
+                            .await
+                        {
+                            Ok(u) => Ok(u),
+                            Err(err) => match err {
+                                octocrab::Error::GitHub { source, backtrace } => {
+                                    if source.documentation_url == "https://docs.github.com/rest/reference/users#get-a-user" {
+                                        eprintln!("Could not fetch user: {}", user.login);
+                                        Ok(UserWithCompanyInfo {
+                                            inner: user,
+                                            company: None,
+                                            email: None,
+                                        })
+                                    } else {
+                                        Err(octocrab::Error::GitHub { source, backtrace })
+                                    }
+                                }
+                                _ => Err(err),
+                            },
+                        }?;
                         for org in orgs {
                             membership = membership
                                 || org.check_membership(&company_user.inner.login).await?;
+                        }
+                        for org in exclude_orgs_clone {
+                            let company_re =
+                                Regex::new(format!(r#"{}"#, regex::escape(org.as_ref())).as_str())
+                                    .unwrap();
+                            let email_re = Regex::new(
+                                format!(r#"@(\w\.)*{}\."#, regex::escape(org.as_ref())).as_str(),
+                            )
+                            .unwrap();
+                            exclude = exclude
+                                || company_user
+                                    .company
+                                    .as_ref()
+                                    .map(|company| company_re.is_match(&company))
+                                    .unwrap_or(false)
+                                || company_user
+                                    .email
+                                    .as_ref()
+                                    .map(|email| email_re.is_match(email))
+                                    .unwrap_or(false);
                         }
                         maybe_company_user = Some(company_user);
                     }
@@ -107,6 +150,7 @@ impl GithubContributionCollector {
                     Result::<_, octocrab::Error>::Ok(Output {
                         user: maybe_company_user,
                         membership,
+                        exclude,
                         contributions,
                     })
                 }
