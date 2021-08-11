@@ -2,6 +2,8 @@ use crate::{
     models::{commit::EnrichedCommit, EnrichedUser},
     Contribution,
 };
+use async_stream::try_stream;
+use futures::Stream;
 use octocrab::{
     models::{issues::Issue, pulls::Review, User},
     orgs::OrgHandler,
@@ -20,11 +22,13 @@ pub struct Output {
     pub contributions: Vec<Contribution>,
 }
 
+/// Client for getting different types of GitHub contributions
 pub struct GithubContributionCollector {
     client: octocrab::Octocrab,
 }
 
 #[derive(Debug, Clone)]
+/// Regexes for doing exclude checks
 struct ExcludeRegex {
     pub company: Regex,
     pub email: Regex,
@@ -51,55 +55,25 @@ impl GithubContributionCollector {
         company_orgs: Vec<impl AsRef<str>>,
         exclude_orgs: Vec<impl AsRef<str> + Clone>,
     ) -> Result<Vec<Output>, octocrab::Error> {
+        // build the regexes once before the stream and clone for perf reasons
+        // https://github.com/rust-lang/regex/blob/master/PERFORMANCE.md#using-a-regex-from-multiple-threads
         let exclude_orgs_re = exclude_orgs.iter().map(|org| ExcludeRegex {
             company: Regex::new(format!(r#"{}"#, regex::escape(org.as_ref())).as_str()).unwrap(),
             email: Regex::new(format!(r#"@(\w\.)*{}\."#, regex::escape(org.as_ref())).as_str())
                 .unwrap(),
         });
-        let output_stream = tokio_stream::iter(contributions_by_user(contributions))
-            .map(|(maybe_user, contributions)| {
-                // create copies so they can be moved inside the async block
-                let cloned_client = self.client.clone();
-                let orgs = company_orgs
-                    .iter()
-                    .map(|org| self.client.orgs(org.as_ref()));
-                let mut exclude_orgs_re_clone = exclude_orgs_re.clone();
 
-                async move {
-                    let mut membership = false;
-                    let mut exclude = false;
-                    let mut maybe_company_user = None;
+        let collection = output_stream(
+            self.client.clone(),
+            contributions,
+            company_orgs,
+            exclude_orgs_re.clone(),
+        )
+        .await
+        .collect::<Result<Vec<Output>, octocrab::Error>>()
+        .await?;
 
-                    if let Some(user) = maybe_user {
-                        let enriched_user = enrich_user(&cloned_client, user).await?;
-                        membership = check_membership(&enriched_user.inner.login, orgs).await?;
-                        exclude = exclude_orgs_re_clone.any(|exclude_re| {
-                            enriched_user
-                                .company
-                                .as_ref()
-                                .map(|company| exclude_re.company.is_match(&company))
-                                .unwrap_or(false)
-                                || enriched_user
-                                    .email
-                                    .as_ref()
-                                    .map(|email| exclude_re.email.is_match(email))
-                                    .unwrap_or(false)
-                        });
-                        maybe_company_user = Some(enriched_user);
-                    }
-
-                    Result::<_, octocrab::Error>::Ok(Output {
-                        user: maybe_company_user,
-                        membership,
-                        exclude,
-                        contributions,
-                    })
-                }
-            })
-            .collect::<Vec<_>>()
-            .await;
-
-        Ok(futures::future::try_join_all(output_stream).await?)
+        Ok(collection)
     }
 
     /// Collect all contributions from commits on the default branch associated with this repo.
@@ -222,6 +196,7 @@ fn contributions_by_user(
     user_contributions
 }
 
+/// Use GitHub API to check membership. This requires the client TOKEN to have access to the org.
 async fn check_membership(
     login: impl AsRef<str>,
     orgs: impl Iterator<Item = OrgHandler<'_>>,
@@ -266,4 +241,49 @@ async fn enrich_user(
     }?;
 
     Ok(enriched_user)
+}
+
+/// Build an output stream
+async fn output_stream(
+    client: octocrab::Octocrab,
+    contributions: impl Iterator<Item = Contribution>,
+    company_orgs: Vec<impl AsRef<str>>,
+    mut exclude_orgs_re: impl Iterator<Item = ExcludeRegex>,
+) -> impl Stream<Item = Result<Output, octocrab::Error>> {
+    try_stream! {
+        let orgs = company_orgs
+            .iter()
+            .map(|org| client.orgs(org.as_ref()));
+
+        for (maybe_user, contributions) in contributions_by_user(contributions) {
+            let mut membership = false;
+            let mut exclude = false;
+            let mut maybe_company_user = None;
+
+            if let Some(user) = maybe_user {
+                let enriched_user = enrich_user(&client, user).await?;
+                membership = check_membership(&enriched_user.inner.login, orgs.clone()).await?;
+                exclude = exclude_orgs_re.any(|exclude_re| {
+                    enriched_user
+                        .company
+                        .as_ref()
+                        .map(|company| exclude_re.company.is_match(&company))
+                        .unwrap_or(false)
+                        || enriched_user
+                        .email
+                        .as_ref()
+                        .map(|email| exclude_re.email.is_match(email))
+                        .unwrap_or(false)
+                });
+                maybe_company_user = Some(enriched_user);
+            }
+
+            yield Output {
+                user: maybe_company_user,
+                membership,
+                exclude,
+                contributions,
+            };
+        }
+    }
 }
