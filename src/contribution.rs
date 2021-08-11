@@ -1,11 +1,11 @@
-use crate::github_contribution_collector::CommitWithDate;
+use crate::models::commit::EnrichedCommit;
 use chrono::{offset::Utc, DateTime};
 use octocrab::models::{issues::Issue, pulls::Review, User};
 
 /// GitHub Contribution as defined in the [GitHub documentation](https://docs.github.com/en/github/setting-up-and-managing-your-github-profile/managing-contribution-graphs-on-your-profile/viewing-contributions-on-your-profile#what-counts-as-a-contribution).
 #[derive(Debug)]
 pub enum Contribution {
-    Commit(CommitWithDate),
+    Commit(EnrichedCommit),
     Issue(Issue),
     Review(Review),
 }
@@ -29,8 +29,8 @@ impl Contribution {
     }
 }
 
-impl From<CommitWithDate> for Contribution {
-    fn from(commit: CommitWithDate) -> Contribution {
+impl From<EnrichedCommit> for Contribution {
+    fn from(commit: EnrichedCommit) -> Contribution {
         Contribution::Commit(commit)
     }
 }
