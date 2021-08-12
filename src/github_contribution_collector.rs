@@ -5,7 +5,11 @@ use crate::{
 use async_stream::try_stream;
 use futures::Stream;
 use octocrab::{
-    models::{issues::Issue, pulls::Review, User},
+    models::{
+        issues::Issue,
+        pulls::{PullRequest, Review},
+        User,
+    },
     orgs::OrgHandler,
     params, Page,
 };
@@ -23,6 +27,7 @@ pub struct Output {
 }
 
 /// Client for getting different types of GitHub contributions
+#[derive(Clone)]
 pub struct GithubContributionCollector {
     client: octocrab::Octocrab,
 }
@@ -58,9 +63,12 @@ impl GithubContributionCollector {
         // build the regexes once before the stream and clone for perf reasons
         // https://github.com/rust-lang/regex/blob/master/PERFORMANCE.md#using-a-regex-from-multiple-threads
         let exclude_orgs_re = exclude_orgs.iter().map(|org| ExcludeRegex {
-            company: Regex::new(format!(r#"{}"#, regex::escape(org.as_ref())).as_str()).unwrap(),
-            email: Regex::new(format!(r#"@(\w\.)*{}\."#, regex::escape(org.as_ref())).as_str())
+            company: Regex::new(format!(r#"(?i){}"#, regex::escape(org.as_ref())).as_str())
                 .unwrap(),
+            email: Regex::new(
+                format!(r#"@(\w\.)*(?i){}(?-i)\."#, regex::escape(org.as_ref())).as_str(),
+            )
+            .unwrap(),
         });
 
         let collection = output_stream(
@@ -93,6 +101,19 @@ impl GithubContributionCollector {
         Ok(self.process_pages(page).await?)
     }
 
+    pub async fn commits_as_contributions(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Contribution>, octocrab::Error> {
+        Ok(self
+            .commits(repo_org, repo)
+            .await?
+            .into_iter()
+            .map(|commit| commit.into())
+            .collect())
+    }
+
     /// Collect all contributions from issues associated with this repo.
     pub async fn issues(
         &self,
@@ -111,6 +132,19 @@ impl GithubContributionCollector {
         Ok(self.process_pages(page).await?)
     }
 
+    pub async fn issues_as_contributions(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Contribution>, octocrab::Error> {
+        Ok(self
+            .issues(repo_org, repo)
+            .await?
+            .into_iter()
+            .map(|issue| issue.into())
+            .collect())
+    }
+
     /// Collect all contributions reviews associated with this repo.
     pub async fn reviews(
         &self,
@@ -127,23 +161,32 @@ impl GithubContributionCollector {
 
         let pull_requests = self.process_pages(page).await?;
 
-        let reviews_stream = tokio_stream::iter(pull_requests)
-            .map(|pull_request| {
-                let pull_handler = self.client.pulls(repo_org.as_ref(), repo.as_ref());
+        let reviews = review_stream(
+            self.client.clone(),
+            pull_requests.into_iter(),
+            repo_org,
+            repo,
+        )
+        .await
+        .collect::<Result<Vec<Vec<Review>>, octocrab::Error>>()
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
 
-                async move {
-                    let page = pull_handler.list_reviews(pull_request.number).await?;
+        Ok(reviews)
+    }
 
-                    Result::<_, octocrab::Error>::Ok(self.process_pages(page).await?)
-                }
-            })
-            .collect::<Vec<_>>()
-            .await;
-
-        Ok(futures::future::try_join_all(reviews_stream)
+    pub async fn reviews_as_contributions(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Contribution>, octocrab::Error> {
+        Ok(self
+            .reviews(repo_org, repo)
             .await?
             .into_iter()
-            .flatten()
+            .map(|review| review.into())
             .collect())
     }
 
@@ -241,6 +284,46 @@ async fn enrich_user(
     }?;
 
     Ok(enriched_user)
+}
+
+/// Get all the items from the current page until the end
+async fn process_pages<T: DeserializeOwned>(
+    client: &octocrab::Octocrab,
+    mut page: Page<T>,
+) -> Result<Vec<T>, octocrab::Error> {
+    let mut items = Vec::new();
+
+    loop {
+        for item in page.take_items() {
+            items.push(item);
+        }
+
+        let next_page_option = client.get_page::<T>(&page.next).await?;
+        if let Some(next_page) = next_page_option {
+            page = next_page;
+        } else {
+            break;
+        }
+    }
+
+    Ok(items)
+}
+
+async fn review_stream(
+    client: octocrab::Octocrab,
+    pull_requests: impl Iterator<Item = PullRequest>,
+    repo_org: impl AsRef<str>,
+    repo: impl AsRef<str>,
+) -> impl Stream<Item = Result<Vec<Review>, octocrab::Error>> {
+    try_stream! {
+        for pull_request in pull_requests {
+            let pull_handler = &client.pulls(repo_org.as_ref(), repo.as_ref());
+            let page = pull_handler.list_reviews(pull_request.number).await?;
+            let items = process_pages(&client, page).await?;
+
+            yield items;
+        }
+    }
 }
 
 /// Build an output stream

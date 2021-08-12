@@ -12,27 +12,16 @@ async fn main() -> anyhow::Result<()> {
     let org = &args[1];
     let repo = &args[2];
     let client = GithubContributionCollector::new(Some(github_token))?;
-    let issues = client
-        .issues(&org, &repo)
-        .await?
-        .into_iter()
-        .map(|issue| issue.into());
-    let reviews = client
-        .reviews(&org, &repo)
-        .await?
-        .into_iter()
-        .map(|review| review.into());
-    let commits = client
-        .commits(&org, &repo)
-        .await?
-        .into_iter()
-        .map(|commit| commit.into());
+    let issues = client.issues_as_contributions(&org, &repo);
+    let reviews = client.reviews_as_contributions(&org, &repo);
+    let commits = client.commits_as_contributions(&org, &repo);
     let mut outputs = client
         .process_contributions(
             issues
+                .await?
                 .into_iter()
-                .chain(reviews.into_iter())
-                .chain(commits.into_iter()),
+                .chain(reviews.await?.into_iter())
+                .chain(commits.await?.into_iter()),
             vec!["heroku", "salesforce", "forcedotcom"],
             vec!["vmware", "pivotal"],
         )
