@@ -331,7 +331,7 @@ async fn output_stream(
     client: octocrab::Octocrab,
     contributions: impl Iterator<Item = Contribution>,
     company_orgs: Vec<impl AsRef<str>>,
-    mut exclude_orgs_re: impl Iterator<Item = ExcludeRegex>,
+    exclude_orgs_re: impl Iterator<Item = ExcludeRegex> + Clone,
 ) -> impl Stream<Item = Result<Output, octocrab::Error>> {
     try_stream! {
         let orgs = company_orgs
@@ -346,7 +346,7 @@ async fn output_stream(
             if let Some(user) = maybe_user {
                 let enriched_user = enrich_user(&client, user).await?;
                 membership = check_membership(&enriched_user.inner.login, orgs.clone()).await?;
-                exclude = exclude_orgs_re.any(|exclude_re| {
+                exclude = exclude_orgs_re.clone().any(|exclude_re| {
                     enriched_user
                         .company
                         .as_ref()
