@@ -29,7 +29,7 @@ pub struct Repo {
 #[derive(Deserialize)]
 pub struct Org {
     pub name: String,
-    pub companise_exclude: Vec<String>,
+    pub companies_exclude: Vec<String>,
 }
 
 #[derive(Deserialize)]
