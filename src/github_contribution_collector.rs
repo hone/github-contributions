@@ -16,6 +16,7 @@ use octocrab::{
 use regex::Regex;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_stream::StreamExt;
 
 #[derive(Debug)]
@@ -27,9 +28,8 @@ pub struct Output {
 }
 
 /// Client for getting different types of GitHub contributions
-#[derive(Clone)]
 pub struct GithubContributionCollector {
-    client: octocrab::Octocrab,
+    client: Arc<octocrab::Octocrab>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ impl GithubContributionCollector {
         }
 
         Ok(Self {
-            client: client.build()?,
+            client: Arc::new(client.build()?),
         })
     }
 
@@ -82,6 +82,28 @@ impl GithubContributionCollector {
         .await?;
 
         Ok(collection)
+    }
+
+    /// Return all contributions for a repo.
+    pub async fn contributions(
+        &self,
+        repo_org: impl AsRef<str>,
+        repo: impl AsRef<str>,
+    ) -> Result<Vec<Contribution>, octocrab::Error> {
+        let (issues, reviews, commits) = tokio::join!(
+            self.issues(repo_org.as_ref(), repo.as_ref()),
+            self.reviews(repo_org.as_ref(), repo.as_ref()),
+            self.commits(repo_org.as_ref(), repo.as_ref()),
+        );
+
+        let contributions = issues?
+            .into_iter()
+            .map(|issue| issue.into())
+            .chain(reviews?.into_iter().map(|review| review.into()))
+            .chain(commits?.into_iter().map(|commit| commit.into()))
+            .collect();
+
+        Ok(contributions)
     }
 
     /// Collect all contributions from commits on the default branch associated with this repo.
@@ -310,7 +332,7 @@ async fn process_pages<T: DeserializeOwned>(
 }
 
 async fn review_stream(
-    client: octocrab::Octocrab,
+    client: Arc<octocrab::Octocrab>,
     pull_requests: impl Iterator<Item = PullRequest>,
     repo_org: impl AsRef<str>,
     repo: impl AsRef<str>,
@@ -328,7 +350,7 @@ async fn review_stream(
 
 /// Build an output stream
 async fn output_stream(
-    client: octocrab::Octocrab,
+    client: Arc<octocrab::Octocrab>,
     contributions: impl Iterator<Item = Contribution>,
     company_orgs: Vec<impl AsRef<str>>,
     exclude_orgs_re: impl Iterator<Item = ExcludeRegex> + Clone,

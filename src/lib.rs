@@ -1,3 +1,4 @@
+pub mod config;
 mod contribution;
 pub mod github_contribution_collector;
 pub mod models;

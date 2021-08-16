@@ -1,5 +1,27 @@
 use chrono::offset::{TimeZone, Utc};
-use github_contributions::{Contribution, GithubContributionCollector};
+use github_contributions::{config::Config, Contribution, GithubContributionCollector};
+use std::sync::Arc;
+
+use async_stream::try_stream;
+use futures::{future::join_all, Stream};
+use tokio_stream::StreamExt;
+
+async fn contributions_stream(
+    client: Arc<GithubContributionCollector>,
+    repos: impl Iterator<Item = &github_contributions::config::Repo>,
+) -> impl Stream<Item = Result<Vec<Contribution>, octocrab::Error>> {
+    try_stream! {
+        let mut tasks = vec![];
+        // queue up all tasks first
+        for repo in repos {
+            tasks.push(client.contributions(&repo.org, &repo.name));
+        }
+        for result in join_all(tasks).await {
+            let contributions = result?;
+            yield contributions;
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -9,22 +31,19 @@ async fn main() -> anyhow::Result<()> {
 
         std::process::exit(1);
     });
-    let org = &args[1];
-    let repo = &args[2];
-    let client = GithubContributionCollector::new(Some(github_token))?;
-    let (issues, reviews, commits) = tokio::join!(
-        client.issues(&org, &repo),
-        client.reviews(&org, &repo),
-        client.commits(&org, &repo)
-    );
+    println!("{}", std::fs::read_to_string(&args[1])?);
+    let config: Config = toml::from_str(&std::fs::read_to_string(&args[1])?)?;
+    let client = Arc::new(GithubContributionCollector::new(Some(github_token))?);
+    let contributions = contributions_stream(client.clone(), config.repos.iter())
+        .await
+        .collect::<Result<Vec<Vec<Contribution>>, octocrab::Error>>()
+        .await?
+        .into_iter()
+        .flatten();
     let mut outputs = client
         .process_contributions(
-            issues?
-                .into_iter()
-                .map(|issue| issue.into())
-                .chain(reviews?.into_iter().map(|review| review.into()))
-                .chain(commits?.into_iter().map(|commit| commit.into())),
-            vec!["heroku", "salesforce", "forcedotcom"],
+            contributions.into_iter(),
+            config.company_organizations.clone(),
             vec!["vmware", "pivotal"],
         )
         .await?;
