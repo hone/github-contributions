@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
             contributions.into_iter(),
             config.company_organizations.clone(),
             vec!["vmware", "pivotal"],
+            config.user_overrides.into_iter(),
         )
         .await?;
 

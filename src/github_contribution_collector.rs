@@ -1,4 +1,5 @@
 use crate::{
+    config,
     models::{commit::EnrichedCommit, EnrichedUser},
     Contribution,
 };
@@ -59,6 +60,7 @@ impl GithubContributionCollector {
         contributions: impl Iterator<Item = Contribution>,
         company_orgs: Vec<impl AsRef<str>>,
         exclude_orgs: Vec<impl AsRef<str> + Clone>,
+        user_overrides: impl Iterator<Item = config::UserOverride>,
     ) -> Result<Vec<Output>, octocrab::Error> {
         // build the regexes once before the stream and clone for perf reasons
         // https://github.com/rust-lang/regex/blob/master/PERFORMANCE.md#using-a-regex-from-multiple-threads
@@ -70,12 +72,16 @@ impl GithubContributionCollector {
             )
             .unwrap(),
         });
+        let user_overrides_map: HashMap<String, config::UserOverride> = user_overrides
+            .map(|user_override| (user_override.login.clone(), user_override))
+            .collect();
 
         let collection = output_stream(
             self.client.clone(),
             contributions,
             company_orgs,
             exclude_orgs_re.clone(),
+            user_overrides_map,
         )
         .await
         .collect::<Result<Vec<Output>, octocrab::Error>>()
@@ -354,6 +360,7 @@ async fn output_stream(
     contributions: impl Iterator<Item = Contribution>,
     company_orgs: Vec<impl AsRef<str>>,
     exclude_orgs_re: impl Iterator<Item = ExcludeRegex> + Clone,
+    user_overrides: HashMap<String, config::UserOverride>,
 ) -> impl Stream<Item = Result<Output, octocrab::Error>> {
     try_stream! {
         let orgs = company_orgs
@@ -366,8 +373,17 @@ async fn output_stream(
             let mut maybe_company_user = None;
 
             if let Some(user) = maybe_user {
-                let enriched_user = enrich_user(&client, user).await?;
-                membership = check_membership(&enriched_user.inner.login, orgs.clone()).await?;
+                let enriched_user;
+                if let Some(override_user) = user_overrides.get(&user.login) {
+                    enriched_user = EnrichedUser {
+                        inner: user,
+                        company: Some(override_user.company.clone()),
+                        email: None,
+                    };
+                } else {
+                    enriched_user = enrich_user(&client, user).await?;
+                    membership = check_membership(&enriched_user.inner.login, orgs.clone()).await?;
+                }
                 exclude = exclude_orgs_re.clone().any(|exclude_re| {
                     enriched_user
                         .company
