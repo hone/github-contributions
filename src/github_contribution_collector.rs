@@ -59,12 +59,12 @@ impl GithubContributionCollector {
         &self,
         contributions: impl Iterator<Item = Contribution>,
         company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
-        exclude_orgs: Vec<impl AsRef<str> + Clone>,
+        exclude_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
         user_overrides: impl Iterator<Item = config::UserOverride>,
     ) -> Result<Vec<Output>, octocrab::Error> {
         // build the regexes once before the stream and clone for perf reasons
         // https://github.com/rust-lang/regex/blob/master/PERFORMANCE.md#using-a-regex-from-multiple-threads
-        let exclude_orgs_re = exclude_orgs.iter().map(|org| ExcludeRegex {
+        let exclude_orgs_re = exclude_orgs.map(|org| ExcludeRegex {
             company: Regex::new(format!(r#"(?i){}"#, regex::escape(org.as_ref())).as_str())
                 .unwrap(),
             email: Regex::new(

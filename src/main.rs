@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .process_contributions(
             contributions.into_iter(),
             config.company_organizations.iter(),
-            vec!["vmware", "pivotal"],
+            vec!["vmware", "pivotal"].iter(),
             config.user_overrides.into_iter(),
         )
         .await?;
