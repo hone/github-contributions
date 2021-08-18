@@ -58,7 +58,7 @@ impl GithubContributionCollector {
     pub async fn process_contributions(
         &self,
         contributions: impl Iterator<Item = Contribution>,
-        company_orgs: Vec<impl AsRef<str>>,
+        company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
         exclude_orgs: Vec<impl AsRef<str> + Clone>,
         user_overrides: impl Iterator<Item = config::UserOverride>,
     ) -> Result<Vec<Output>, octocrab::Error> {
@@ -358,13 +358,12 @@ async fn review_stream(
 async fn output_stream(
     client: Arc<octocrab::Octocrab>,
     contributions: impl Iterator<Item = Contribution>,
-    company_orgs: Vec<impl AsRef<str>>,
+    company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
     exclude_orgs_re: impl Iterator<Item = ExcludeRegex> + Clone,
     user_overrides: HashMap<String, config::UserOverride>,
 ) -> impl Stream<Item = Result<Output, octocrab::Error>> {
     try_stream! {
         let orgs = company_orgs
-            .iter()
             .map(|org| client.orgs(org.as_ref()));
 
         for (maybe_user, contributions) in contributions_by_user(contributions) {

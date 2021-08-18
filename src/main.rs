@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let mut outputs = client
         .process_contributions(
             contributions.into_iter(),
-            config.company_organizations.clone(),
+            config.company_organizations.iter(),
             vec!["vmware", "pivotal"],
             config.user_overrides.into_iter(),
         )
