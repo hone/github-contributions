@@ -1,3 +1,4 @@
+use crate::models;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -18,10 +19,10 @@ pub struct Config {
     pub user_overrides: Vec<UserOverride>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Debug)]
 pub struct Repo {
-    pub org: String,
-    pub name: String,
+    #[serde(flatten)]
+    pub repo: models::Repo,
     #[serde(default)]
     pub companies_exclude: Vec<String>,
 }

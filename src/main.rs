@@ -1,5 +1,7 @@
 use chrono::offset::{TimeZone, Utc};
-use github_contributions::{config::Config, Contribution, GithubContributionCollector};
+use github_contributions::{
+    config::Config, contribution::GithubContribution, Contribution, GithubContributionCollector,
+};
 use std::sync::Arc;
 
 use async_stream::try_stream;
@@ -14,7 +16,7 @@ async fn contributions_stream(
         let mut tasks = vec![];
         // queue up all tasks first
         for repo in repos {
-            tasks.push(client.contributions(&repo.org, &repo.name));
+            tasks.push(client.contributions(&repo.repo.org, &repo.repo.name));
         }
         for result in join_all(tasks).await {
             let contributions = result?;
@@ -44,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         .process_contributions(
             contributions.into_iter(),
             config.company_organizations.iter(),
-            vec!["vmware", "pivotal"].iter(),
+            config.repos.iter(),
             config.user_overrides.into_iter(),
         )
         .await?;
@@ -56,7 +58,6 @@ async fn main() -> anyhow::Result<()> {
     }
     outputs.retain(|output| {
         !output.membership
-            && !output.exclude
             && output.contributions.len() > 0
             && output
                 .user
@@ -81,10 +82,10 @@ async fn main() -> anyhow::Result<()> {
         let mut commits_count = 0;
 
         for contribution in output.contributions.iter() {
-            match contribution {
-                Contribution::Issue(_) => issues_count += 1,
-                Contribution::Review(_) => reviews_count += 1,
-                Contribution::Commit(_) => commits_count += 1,
+            match contribution.contribution {
+                GithubContribution::Issue(_) => issues_count += 1,
+                GithubContribution::Review(_) => reviews_count += 1,
+                GithubContribution::Commit(_) => commits_count += 1,
             }
         }
         println!(

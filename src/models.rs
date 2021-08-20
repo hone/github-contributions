@@ -1,6 +1,21 @@
 use octocrab::models::User;
 use serde::Deserialize;
 
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Repo {
+    pub org: String,
+    pub name: String,
+}
+
+impl Repo {
+    pub fn new(org: impl Into<String>, name: impl Into<String>) -> Self {
+        Repo {
+            org: org.into(),
+            name: name.into(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct EnrichedUser {
     #[serde(flatten)]

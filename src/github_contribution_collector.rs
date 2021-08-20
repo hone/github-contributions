@@ -1,6 +1,6 @@
 use crate::{
     config,
-    models::{commit::EnrichedCommit, EnrichedUser},
+    models::{self, commit::EnrichedCommit, EnrichedUser},
     Contribution,
 };
 use async_stream::try_stream;
@@ -16,28 +16,55 @@ use octocrab::{
 };
 use regex::Regex;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio_stream::StreamExt;
-
-#[derive(Debug)]
-pub struct Output {
-    pub user: Option<EnrichedUser>,
-    pub membership: bool,
-    pub exclude: bool,
-    pub contributions: Vec<Contribution>,
-}
-
-/// Client for getting different types of GitHub contributions
-pub struct GithubContributionCollector {
-    client: Arc<octocrab::Octocrab>,
-}
 
 #[derive(Debug, Clone)]
 /// Regexes for doing exclude checks
 struct ExcludeRegex {
     pub company: Regex,
     pub email: Regex,
+}
+
+#[derive(Debug)]
+pub struct Output {
+    pub user: Option<EnrichedUser>,
+    pub membership: bool,
+    pub contributions: Vec<Contribution>,
+}
+
+#[derive(Debug)]
+struct RepoRegex {
+    repo: models::Repo,
+    companies_exclude: Vec<ExcludeRegex>,
+}
+
+impl From<&config::Repo> for RepoRegex {
+    fn from(value: &config::Repo) -> Self {
+        RepoRegex {
+            repo: value.repo.clone(),
+            companies_exclude: value
+                .companies_exclude
+                .iter()
+                .map(|company| ExcludeRegex {
+                    company: Regex::new(
+                        format!(r#"(?i){}"#, regex::escape(company.as_ref())).as_str(),
+                    )
+                    .unwrap(),
+                    email: Regex::new(
+                        format!(r#"@(\w\.)*(?i){}(?-i)\."#, regex::escape(company.as_ref()))
+                            .as_str(),
+                    )
+                    .unwrap(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Client for getting different types of GitHub contributions
+pub struct GithubContributionCollector {
+    client: Arc<octocrab::Octocrab>,
 }
 
 impl GithubContributionCollector {
@@ -59,19 +86,10 @@ impl GithubContributionCollector {
         &self,
         contributions: impl Iterator<Item = Contribution>,
         company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
-        exclude_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
+        repos: impl Iterator<Item = &config::Repo> + Clone,
         user_overrides: impl Iterator<Item = config::UserOverride>,
     ) -> Result<Vec<Output>, octocrab::Error> {
-        // build the regexes once before the stream and clone for perf reasons
-        // https://github.com/rust-lang/regex/blob/master/PERFORMANCE.md#using-a-regex-from-multiple-threads
-        let exclude_orgs_re = exclude_orgs.map(|org| ExcludeRegex {
-            company: Regex::new(format!(r#"(?i){}"#, regex::escape(org.as_ref())).as_str())
-                .unwrap(),
-            email: Regex::new(
-                format!(r#"@(\w\.)*(?i){}(?-i)\."#, regex::escape(org.as_ref())).as_str(),
-            )
-            .unwrap(),
-        });
+        let repos_re = repos.map(|repo| RepoRegex::from(repo));
         let user_overrides_map: HashMap<String, config::UserOverride> = user_overrides
             .map(|user_override| (user_override.login.clone(), user_override))
             .collect();
@@ -80,7 +98,7 @@ impl GithubContributionCollector {
             self.client.clone(),
             contributions,
             company_orgs,
-            exclude_orgs_re.clone(),
+            repos_re,
             user_overrides_map,
         )
         .await
@@ -102,12 +120,17 @@ impl GithubContributionCollector {
             self.commits(repo_org.as_ref(), repo.as_ref()),
         );
 
-        let contributions = issues?
-            .into_iter()
-            .map(|issue| issue.into())
-            .chain(reviews?.into_iter().map(|review| review.into()))
-            .chain(commits?.into_iter().map(|commit| commit.into()))
-            .collect();
+        let contributions =
+            issues?
+                .into_iter()
+                .map(|issue| Contribution::new(repo_org.as_ref(), repo.as_ref(), issue.into()))
+                .chain(reviews?.into_iter().map(|review| {
+                    Contribution::new(repo_org.as_ref(), repo.as_ref(), review.into())
+                }))
+                .chain(commits?.into_iter().map(|commit| {
+                    Contribution::new(repo_org.as_ref(), repo.as_ref(), commit.into())
+                }))
+                .collect();
 
         Ok(contributions)
     }
@@ -135,10 +158,10 @@ impl GithubContributionCollector {
         repo: impl AsRef<str>,
     ) -> Result<Vec<Contribution>, octocrab::Error> {
         Ok(self
-            .commits(repo_org, repo)
+            .commits(repo_org.as_ref(), repo.as_ref())
             .await?
             .into_iter()
-            .map(|commit| commit.into())
+            .map(|commit| Contribution::new(repo_org.as_ref(), repo.as_ref(), commit.into()))
             .collect())
     }
 
@@ -166,10 +189,10 @@ impl GithubContributionCollector {
         repo: impl AsRef<str>,
     ) -> Result<Vec<Contribution>, octocrab::Error> {
         Ok(self
-            .issues(repo_org, repo)
+            .issues(repo_org.as_ref(), repo.as_ref())
             .await?
             .into_iter()
-            .map(|issue| issue.into())
+            .map(|issue| Contribution::new(repo_org.as_ref(), repo.as_ref(), issue.into()))
             .collect())
     }
 
@@ -211,10 +234,10 @@ impl GithubContributionCollector {
         repo: impl AsRef<str>,
     ) -> Result<Vec<Contribution>, octocrab::Error> {
         Ok(self
-            .reviews(repo_org, repo)
+            .reviews(repo_org.as_ref(), repo.as_ref())
             .await?
             .into_iter()
-            .map(|review| review.into())
+            .map(|review| Contribution::new(repo_org.as_ref(), repo.as_ref(), review.into()))
             .collect())
     }
 
@@ -359,7 +382,7 @@ async fn output_stream(
     client: Arc<octocrab::Octocrab>,
     contributions: impl Iterator<Item = Contribution>,
     company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
-    exclude_orgs_re: impl Iterator<Item = ExcludeRegex> + Clone,
+    repos: impl Iterator<Item = RepoRegex> + Clone,
     user_overrides: HashMap<String, config::UserOverride>,
 ) -> impl Stream<Item = Result<Output, octocrab::Error>> {
     try_stream! {
@@ -368,8 +391,8 @@ async fn output_stream(
 
         for (maybe_user, contributions) in contributions_by_user(contributions) {
             let mut membership = false;
-            let mut exclude = false;
             let mut maybe_company_user = None;
+            let mut processed_contributions = contributions;
 
             if let Some(user) = maybe_user {
                 let enriched_user;
@@ -383,26 +406,43 @@ async fn output_stream(
                     enriched_user = enrich_user(&client, user).await?;
                     membership = check_membership(&enriched_user.inner.login, orgs.clone()).await?;
                 }
-                exclude = exclude_orgs_re.clone().any(|exclude_re| {
-                    enriched_user
-                        .company
-                        .as_ref()
-                        .map(|company| exclude_re.company.is_match(&company))
-                        .unwrap_or(false)
-                        || enriched_user
-                        .email
-                        .as_ref()
-                        .map(|email| exclude_re.email.is_match(email))
-                        .unwrap_or(false)
-                });
+
+                for config_repo in repos.clone() {
+                    processed_contributions = processed_contributions.into_iter().filter(|contribution| {
+                        if config_repo.repo == contribution.repo {
+                            // if the user matches an org that matches our exclude, don't keep this
+                            // contribution
+                            return !config_repo.companies_exclude.iter().any(|exclude_re| {
+                                enriched_user
+                                    .company
+                                    .as_ref()
+                                    .map(|company| exclude_re.company.is_match(&company))
+                                    .unwrap_or(false)
+                                    || enriched_user
+                                    .email
+                                    .as_ref()
+                                    .map(|email| exclude_re.email.is_match(email))
+                                    .unwrap_or(false)
+                                })
+                        }
+
+                        true
+
+                    }).collect();
+                }
+
                 maybe_company_user = Some(enriched_user);
+            }
+
+            // don't yield an output if there are no contributions if they got excluded
+            if processed_contributions.len() <= 0 {
+                continue
             }
 
             yield Output {
                 user: maybe_company_user,
                 membership,
-                exclude,
-                contributions,
+                contributions: processed_contributions,
             };
         }
     }
