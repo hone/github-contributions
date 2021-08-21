@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     for output in outputs.iter_mut() {
         output.contributions.retain(|contribution| {
             contribution.created_at() >= Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0))
+                && contribution.created_at() < Some(Utc.ymd(2021, 8, 1).and_hms(0, 0, 0))
         });
     }
     outputs.retain(|output| {
