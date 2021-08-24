@@ -1,23 +1,29 @@
 use chrono::offset::{TimeZone, Utc};
 use github_contributions::{
-    config::Config, contribution::GithubContribution, Contribution, GithubContributionCollector,
+    config::Config, contribution::GithubContribution, github_contribution_collector::Params,
+    Contribution, GithubContributionCollector,
 };
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_stream::try_stream;
 use futures::{future::join_all, Stream};
 use tokio_stream::StreamExt;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-async fn contributions_stream(
+async fn contributions_stream<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
     client: Arc<GithubContributionCollector>,
     repos: impl Iterator<Item = &github_contributions::config::Repo>,
-) -> impl Stream<Item = Result<Vec<Contribution>, octocrab::Error>> {
+    params: Params<TzA, TzB>,
+) -> impl Stream<Item = Result<Vec<Contribution>, octocrab::Error>>
+where
+    TzA::Offset: fmt::Display,
+    TzB::Offset: fmt::Display,
+{
     try_stream! {
         let mut tasks = vec![];
         // queue up all tasks first
         for repo in repos {
-            tasks.push(client.contributions(&repo.repo.org, &repo.repo.name));
+            tasks.push(client.contributions(&repo.repo.org, &repo.repo.name, &params));
         }
         for result in join_all(tasks).await {
             let contributions = result?;
@@ -41,7 +47,11 @@ async fn main() -> anyhow::Result<()> {
     });
     let config: Config = toml::from_str(&std::fs::read_to_string(&args[1])?)?;
     let client = Arc::new(GithubContributionCollector::new(Some(github_token))?);
-    let contributions = contributions_stream(client.clone(), config.repos.iter())
+    let params = Params {
+        since: Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0)),
+        until: Some(Utc.ymd(2021, 8, 1).and_hms(0, 0, 0)),
+    };
+    let contributions = contributions_stream(client.clone(), config.repos.iter(), params)
         .await
         .collect::<Result<Vec<Vec<Contribution>>, octocrab::Error>>()
         .await?

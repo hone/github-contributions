@@ -4,6 +4,7 @@ use crate::{
     Contribution,
 };
 use async_stream::try_stream;
+use chrono::{offset::TimeZone, DateTime};
 use futures::Stream;
 use octocrab::{
     models::{
@@ -19,6 +20,40 @@ use serde::de::DeserializeOwned;
 use std::{collections::HashMap, fmt, sync::Arc};
 use tokio_stream::StreamExt;
 use tracing::{info, instrument};
+
+/// Common Parameters for the GitHub API
+#[derive(Clone, Debug)]
+pub struct Params<TzA: TimeZone, TzB: TimeZone>
+where
+    TzA::Offset: fmt::Display,
+    TzB::Offset: fmt::Display,
+{
+    pub since: Option<DateTime<TzA>>,
+    pub until: Option<DateTime<TzB>>,
+}
+
+impl<TzA: TimeZone, TzB: TimeZone> Params<TzA, TzB>
+where
+    TzA::Offset: fmt::Display,
+    TzB::Offset: fmt::Display,
+{
+    /// convert into the data structure reqwest uses for parameters
+    fn to_params(&self) -> Option<Vec<(&str, String)>> {
+        let mut params_vec = vec![];
+        if let Some(since) = self.since.as_ref() {
+            params_vec.push(("since", since.to_rfc3339()));
+        }
+        if let Some(after) = self.until.as_ref() {
+            params_vec.push(("until", after.to_rfc3339()));
+        }
+
+        if params_vec.is_empty() {
+            None
+        } else {
+            Some(params_vec)
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 /// Regexes for doing exclude checks
@@ -118,11 +153,16 @@ impl GithubContributionCollector {
 
     /// Return all contributions for a repo.
     #[instrument(skip(self))]
-    pub async fn contributions(
+    pub async fn contributions<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
         &self,
         repo_org: impl AsRef<str> + fmt::Debug,
         repo: impl AsRef<str> + fmt::Debug,
-    ) -> Result<Vec<Contribution>, octocrab::Error> {
+        params: &Params<TzA, TzB>,
+    ) -> Result<Vec<Contribution>, octocrab::Error>
+    where
+        TzA::Offset: fmt::Display,
+        TzB::Offset: fmt::Display,
+    {
         info!(
             "Fetching contributions: {}/{}",
             repo_org.as_ref(),
@@ -131,7 +171,7 @@ impl GithubContributionCollector {
         let (issues, reviews, commits) = tokio::join!(
             self.issues(repo_org.as_ref(), repo.as_ref()),
             self.reviews(repo_org.as_ref(), repo.as_ref()),
-            self.commits(repo_org.as_ref(), repo.as_ref()),
+            self.commits(repo_org.as_ref(), repo.as_ref(), params),
         );
 
         let contributions =
@@ -151,35 +191,27 @@ impl GithubContributionCollector {
 
     /// Collect all contributions from commits on the default branch associated with this repo.
     #[instrument(skip(self))]
-    pub async fn commits(
+    pub async fn commits<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
         &self,
         repo_org: impl AsRef<str> + fmt::Debug,
         repo: impl AsRef<str> + fmt::Debug,
-    ) -> Result<Vec<EnrichedCommit>, octocrab::Error> {
+        params: &Params<TzA, TzB>,
+    ) -> Result<Vec<EnrichedCommit>, octocrab::Error>
+    where
+        TzA::Offset: fmt::Display,
+        TzB::Offset: fmt::Display,
+    {
         let page: Page<EnrichedCommit> = self
             .client
             .get(
                 format!("/repos/{}/{}/commits", repo_org.as_ref(), repo.as_ref()),
-                None::<&()>,
+                params.to_params().as_ref(),
             )
             .await?;
 
         info!(pages = ?page.number_of_pages(), "type" = "commits");
 
         Ok(self.process_pages(page).await?)
-    }
-
-    pub async fn commits_as_contributions(
-        &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
-    ) -> Result<Vec<Contribution>, octocrab::Error> {
-        Ok(self
-            .commits(repo_org.as_ref(), repo.as_ref())
-            .await?
-            .into_iter()
-            .map(|commit| Contribution::new(repo_org.as_ref(), repo.as_ref(), commit.into()))
-            .collect())
     }
 
     /// Collect all contributions from issues associated with this repo.
@@ -201,19 +233,6 @@ impl GithubContributionCollector {
         info!(pages = ?page.number_of_pages(), "type" = "issues");
 
         Ok(self.process_pages(page).await?)
-    }
-
-    pub async fn issues_as_contributions(
-        &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
-    ) -> Result<Vec<Contribution>, octocrab::Error> {
-        Ok(self
-            .issues(repo_org.as_ref(), repo.as_ref())
-            .await?
-            .into_iter()
-            .map(|issue| Contribution::new(repo_org.as_ref(), repo.as_ref(), issue.into()))
-            .collect())
     }
 
     /// Collect all contributions reviews associated with this repo.
@@ -249,19 +268,6 @@ impl GithubContributionCollector {
         .collect();
 
         Ok(reviews)
-    }
-
-    pub async fn reviews_as_contributions(
-        &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
-    ) -> Result<Vec<Contribution>, octocrab::Error> {
-        Ok(self
-            .reviews(repo_org.as_ref(), repo.as_ref())
-            .await?
-            .into_iter()
-            .map(|review| Contribution::new(repo_org.as_ref(), repo.as_ref(), review.into()))
-            .collect())
     }
 
     /// Get all the items from the current page until the end
