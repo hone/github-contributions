@@ -16,8 +16,9 @@ use octocrab::{
 };
 use regex::Regex;
 use serde::de::DeserializeOwned;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 use tokio_stream::StreamExt;
+use tracing::{info, instrument};
 
 #[derive(Debug, Clone)]
 /// Regexes for doing exclude checks
@@ -67,6 +68,12 @@ pub struct GithubContributionCollector {
     client: Arc<octocrab::Octocrab>,
 }
 
+impl fmt::Debug for GithubContributionCollector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GithubContributionCollector").finish()
+    }
+}
+
 impl GithubContributionCollector {
     pub fn new(token: Option<impl Into<String>>) -> Result<Self, octocrab::Error> {
         let mut client = octocrab::OctocrabBuilder::new();
@@ -82,12 +89,13 @@ impl GithubContributionCollector {
     /// Given an Iterator of `Contribution`s, generate a `Vec<Output>`.
     /// ## Notes
     /// `company_orgs` requires access from the GitHub Token provided.
+    #[instrument]
     pub async fn process_contributions(
         &self,
-        contributions: impl Iterator<Item = Contribution>,
-        company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
-        repos: impl Iterator<Item = &config::Repo> + Clone,
-        user_overrides: impl Iterator<Item = config::UserOverride>,
+        contributions: impl Iterator<Item = Contribution> + fmt::Debug,
+        company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
+        repos: impl Iterator<Item = &config::Repo> + Clone + fmt::Debug,
+        user_overrides: impl Iterator<Item = config::UserOverride> + fmt::Debug,
     ) -> Result<Vec<Output>, octocrab::Error> {
         let repos_re = repos.map(|repo| RepoRegex::from(repo));
         let user_overrides_map: HashMap<String, config::UserOverride> = user_overrides
@@ -109,11 +117,17 @@ impl GithubContributionCollector {
     }
 
     /// Return all contributions for a repo.
+    #[instrument]
     pub async fn contributions(
         &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
+        repo_org: impl AsRef<str> + fmt::Debug,
+        repo: impl AsRef<str> + fmt::Debug,
     ) -> Result<Vec<Contribution>, octocrab::Error> {
+        info!(
+            "Fetching contributions: {}/{}",
+            repo_org.as_ref(),
+            repo.as_ref()
+        );
         let (issues, reviews, commits) = tokio::join!(
             self.issues(repo_org.as_ref(), repo.as_ref()),
             self.reviews(repo_org.as_ref(), repo.as_ref()),
@@ -136,10 +150,11 @@ impl GithubContributionCollector {
     }
 
     /// Collect all contributions from commits on the default branch associated with this repo.
+    #[instrument]
     pub async fn commits(
         &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
+        repo_org: impl AsRef<str> + fmt::Debug,
+        repo: impl AsRef<str> + fmt::Debug,
     ) -> Result<Vec<EnrichedCommit>, octocrab::Error> {
         let page: Page<EnrichedCommit> = self
             .client
@@ -148,6 +163,8 @@ impl GithubContributionCollector {
                 None::<&()>,
             )
             .await?;
+
+        info!(pages = ?page.number_of_pages(), "type" = "commits");
 
         Ok(self.process_pages(page).await?)
     }
@@ -166,10 +183,11 @@ impl GithubContributionCollector {
     }
 
     /// Collect all contributions from issues associated with this repo.
+    #[instrument]
     pub async fn issues(
         &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
+        repo_org: impl AsRef<str> + fmt::Debug,
+        repo: impl AsRef<str> + fmt::Debug,
     ) -> Result<Vec<Issue>, octocrab::Error> {
         let page = self
             .client
@@ -179,6 +197,8 @@ impl GithubContributionCollector {
             .direction(params::Direction::Descending)
             .send()
             .await?;
+
+        info!(pages = ?page.number_of_pages(), "type" = "issues");
 
         Ok(self.process_pages(page).await?)
     }
@@ -197,10 +217,11 @@ impl GithubContributionCollector {
     }
 
     /// Collect all contributions reviews associated with this repo.
+    #[instrument]
     pub async fn reviews(
         &self,
-        repo_org: impl AsRef<str>,
-        repo: impl AsRef<str>,
+        repo_org: impl AsRef<str> + fmt::Debug,
+        repo: impl AsRef<str> + fmt::Debug,
     ) -> Result<Vec<Review>, octocrab::Error> {
         let pull_handler = self.client.pulls(repo_org.as_ref(), repo.as_ref());
         let page = pull_handler
@@ -209,6 +230,8 @@ impl GithubContributionCollector {
             .direction(params::Direction::Descending)
             .send()
             .await?;
+
+        info!(pages = ?page.number_of_pages(), "type" = "pull_requests");
 
         let pull_requests = self.process_pages(page).await?;
 
@@ -242,7 +265,8 @@ impl GithubContributionCollector {
     }
 
     /// Get all the items from the current page until the end
-    async fn process_pages<T: DeserializeOwned>(
+    #[instrument]
+    async fn process_pages<T: DeserializeOwned + fmt::Debug>(
         &self,
         mut page: Page<T>,
     ) -> Result<Vec<T>, octocrab::Error> {
@@ -267,8 +291,9 @@ impl GithubContributionCollector {
 
 /// Given an `Iterator` of Contributions, return a HashMap where the key is the User and the value is
 /// a `Vec` of those contributions.
+#[instrument]
 fn contributions_by_user(
-    contributions: impl Iterator<Item = Contribution>,
+    contributions: impl Iterator<Item = Contribution> + fmt::Debug,
 ) -> HashMap<Option<User>, Vec<Contribution>> {
     let mut user_contributions: HashMap<Option<User>, Vec<Contribution>> = HashMap::new();
     for contribution in contributions {
@@ -291,9 +316,10 @@ fn contributions_by_user(
 }
 
 /// Use GitHub API to check membership. This requires the client TOKEN to have access to the org.
+#[instrument]
 async fn check_membership(
-    login: impl AsRef<str>,
-    orgs: impl Iterator<Item = OrgHandler<'_>>,
+    login: impl AsRef<str> + fmt::Debug,
+    orgs: impl Iterator<Item = OrgHandler<'_>> + fmt::Debug,
 ) -> Result<bool, octocrab::Error> {
     let mut membership = false;
 
@@ -305,6 +331,7 @@ async fn check_membership(
 }
 
 /// Enrich user with more data from the GitHub API
+#[instrument]
 async fn enrich_user(
     client: &octocrab::Octocrab,
     user: User,
@@ -338,7 +365,8 @@ async fn enrich_user(
 }
 
 /// Get all the items from the current page until the end
-async fn process_pages<T: DeserializeOwned>(
+#[instrument]
+async fn process_pages<T: DeserializeOwned + fmt::Debug>(
     client: &octocrab::Octocrab,
     mut page: Page<T>,
 ) -> Result<Vec<T>, octocrab::Error> {
@@ -360,11 +388,13 @@ async fn process_pages<T: DeserializeOwned>(
     Ok(items)
 }
 
+/// Stream of Pull Request Reviews
+#[instrument]
 async fn review_stream(
     client: Arc<octocrab::Octocrab>,
-    pull_requests: impl Iterator<Item = PullRequest>,
-    repo_org: impl AsRef<str>,
-    repo: impl AsRef<str>,
+    pull_requests: impl Iterator<Item = PullRequest> + fmt::Debug,
+    repo_org: impl AsRef<str> + fmt::Debug,
+    repo: impl AsRef<str> + fmt::Debug,
 ) -> impl Stream<Item = Result<Vec<Review>, octocrab::Error>> {
     try_stream! {
         for pull_request in pull_requests {
@@ -378,11 +408,12 @@ async fn review_stream(
 }
 
 /// Build an output stream
+#[instrument]
 async fn output_stream(
     client: Arc<octocrab::Octocrab>,
-    contributions: impl Iterator<Item = Contribution>,
-    company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone,
-    repos: impl Iterator<Item = RepoRegex> + Clone,
+    contributions: impl Iterator<Item = Contribution> + fmt::Debug,
+    company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
+    repos: impl Iterator<Item = RepoRegex> + Clone + fmt::Debug,
     user_overrides: HashMap<String, config::UserOverride>,
 ) -> impl Stream<Item = Result<Output, octocrab::Error>> {
     try_stream! {

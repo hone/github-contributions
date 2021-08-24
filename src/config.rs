@@ -1,7 +1,7 @@
 use crate::models;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 /// Config file for contribution collector
 /// # Example
 /// company_organizations = [
@@ -27,13 +27,13 @@ pub struct Repo {
     pub companies_exclude: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Org {
     pub name: String,
     pub companies_exclude: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct UserOverride {
     pub login: String,
     pub company: String,

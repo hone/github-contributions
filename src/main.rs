@@ -7,6 +7,7 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use futures::{future::join_all, Stream};
 use tokio_stream::StreamExt;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 async fn contributions_stream(
     client: Arc<GithubContributionCollector>,
@@ -27,13 +28,17 @@ async fn contributions_stream(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let subscriber = FmtSubscriber::builder()
+        .with_env_filter(EnvFilter::from_default_env())
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
     let args = std::env::args().collect::<Vec<String>>();
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| {
         eprintln!("Please provide a GITHUB_TOKEN");
 
         std::process::exit(1);
     });
-    println!("{}", std::fs::read_to_string(&args[1])?);
     let config: Config = toml::from_str(&std::fs::read_to_string(&args[1])?)?;
     let client = Arc::new(GithubContributionCollector::new(Some(github_token))?);
     let contributions = contributions_stream(client.clone(), config.repos.iter())
