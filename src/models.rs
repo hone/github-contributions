@@ -1,5 +1,6 @@
 use octocrab::models::User;
 use serde::Deserialize;
+use std::fmt;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Repo {
@@ -16,12 +17,23 @@ impl Repo {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct EnrichedUser {
     #[serde(flatten)]
     pub inner: User,
     pub company: Option<String>,
     pub email: Option<String>,
+}
+
+impl fmt::Debug for EnrichedUser {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EnrichedUser")
+            .field("login", &self.inner.login)
+            .field("id", &self.inner.id)
+            .field("company", &self.company)
+            .field("email", &self.email)
+            .finish()
+    }
 }
 
 pub mod commit {

@@ -89,7 +89,7 @@ impl GithubContributionCollector {
     /// Given an Iterator of `Contribution`s, generate a `Vec<Output>`.
     /// ## Notes
     /// `company_orgs` requires access from the GitHub Token provided.
-    #[instrument]
+    #[instrument(skip(self, contributions))]
     pub async fn process_contributions(
         &self,
         contributions: impl Iterator<Item = Contribution> + fmt::Debug,
@@ -117,7 +117,7 @@ impl GithubContributionCollector {
     }
 
     /// Return all contributions for a repo.
-    #[instrument]
+    #[instrument(skip(self))]
     pub async fn contributions(
         &self,
         repo_org: impl AsRef<str> + fmt::Debug,
@@ -150,7 +150,7 @@ impl GithubContributionCollector {
     }
 
     /// Collect all contributions from commits on the default branch associated with this repo.
-    #[instrument]
+    #[instrument(skip(self))]
     pub async fn commits(
         &self,
         repo_org: impl AsRef<str> + fmt::Debug,
@@ -183,7 +183,7 @@ impl GithubContributionCollector {
     }
 
     /// Collect all contributions from issues associated with this repo.
-    #[instrument]
+    #[instrument(skip(self))]
     pub async fn issues(
         &self,
         repo_org: impl AsRef<str> + fmt::Debug,
@@ -217,7 +217,7 @@ impl GithubContributionCollector {
     }
 
     /// Collect all contributions reviews associated with this repo.
-    #[instrument]
+    #[instrument(skip(self))]
     pub async fn reviews(
         &self,
         repo_org: impl AsRef<str> + fmt::Debug,
@@ -265,7 +265,7 @@ impl GithubContributionCollector {
     }
 
     /// Get all the items from the current page until the end
-    #[instrument]
+    #[instrument(skip(self, page))]
     async fn process_pages<T: DeserializeOwned + fmt::Debug>(
         &self,
         mut page: Page<T>,
@@ -331,7 +331,7 @@ async fn check_membership(
 }
 
 /// Enrich user with more data from the GitHub API
-#[instrument]
+#[instrument(skip(client, user))]
 async fn enrich_user(
     client: &octocrab::Octocrab,
     user: User,
@@ -365,7 +365,7 @@ async fn enrich_user(
 }
 
 /// Get all the items from the current page until the end
-#[instrument]
+#[instrument(skip(client, page))]
 async fn process_pages<T: DeserializeOwned + fmt::Debug>(
     client: &octocrab::Octocrab,
     mut page: Page<T>,
@@ -389,7 +389,7 @@ async fn process_pages<T: DeserializeOwned + fmt::Debug>(
 }
 
 /// Stream of Pull Request Reviews
-#[instrument]
+#[instrument(skip(client))]
 async fn review_stream(
     client: Arc<octocrab::Octocrab>,
     pull_requests: impl Iterator<Item = PullRequest> + fmt::Debug,
@@ -408,7 +408,7 @@ async fn review_stream(
 }
 
 /// Build an output stream
-#[instrument]
+#[instrument(skip(client))]
 async fn output_stream(
     client: Arc<octocrab::Octocrab>,
     contributions: impl Iterator<Item = Contribution> + fmt::Debug,
