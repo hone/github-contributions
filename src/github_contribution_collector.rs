@@ -437,7 +437,7 @@ where
     TzB::Offset: fmt::Display,
 {
     try_stream! {
-        let orgs = company_orgs
+        let orgs = company_orgs.clone()
             .map(|org| client.orgs(org.as_ref()));
 
         for (maybe_user, contributions) in contributions_by_user(contributions) {
@@ -457,6 +457,7 @@ where
                         company: Some(override_user.company.clone()),
                         email: None,
                     };
+                    membership = company_orgs.clone().find(|org| org.as_ref() == override_user.company).is_some();
                 } else {
                     enriched_user = enrich_user(&client, user).await?;
                     membership = check_membership(&enriched_user.inner.login, orgs.clone()).await?;
