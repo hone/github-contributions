@@ -1,12 +1,11 @@
+use async_stream::try_stream;
 use chrono::offset::{TimeZone, Utc};
+use futures::{future::join_all, Stream};
 use github_contributions::{
     config::Config, contribution::GithubContribution, github_contribution_collector::Params,
-    Contribution, GithubContributionCollector,
+    models::Repo, Contribution, GithubContributionCollector,
 };
-use std::{fmt, sync::Arc};
-
-use async_stream::try_stream;
-use futures::{future::join_all, Stream};
+use std::{collections::HashMap, fmt, sync::Arc};
 use tokio_stream::StreamExt;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -77,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     println!(
-        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10}",
+        "{0: <40} {1: <10} {2: <10} {3: <10} {4: <10}",
         "handle", "issues", "reviews", "commits", "all"
     );
     for output in outputs.iter() {
@@ -93,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         println!(
-            "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10}",
+            "{0: <40} {1: <10} {2: <10} {3: <10} {4: <10}",
             output
                 .user
                 .as_ref()
@@ -110,6 +109,51 @@ async fn main() -> anyhow::Result<()> {
         outputs
             .iter()
             .fold(0, |sum, output| sum + output.contributions.len())
+    );
+
+    let mut per_repo: HashMap<Repo, Vec<Contribution>> = HashMap::new();
+    for contribution in outputs
+        .iter()
+        .flat_map(|output| output.contributions.clone())
+    {
+        let value = per_repo
+            .entry(contribution.repo.clone())
+            .or_insert(Vec::new());
+        (*value).push(contribution.clone());
+    }
+
+    println!("--");
+
+    println!(
+        "{0: <40} {1: <10} {2: <10} {3: <10} {4: <10}",
+        "repo", "issues", "reviews", "commits", "all"
+    );
+    for (repo, contributions) in per_repo.iter() {
+        let mut issues_count = 0;
+        let mut reviews_count = 0;
+        let mut commits_count = 0;
+
+        for contribution in contributions.iter() {
+            match contribution.contribution {
+                GithubContribution::Issue(_) => issues_count += 1,
+                GithubContribution::Review(_) => reviews_count += 1,
+                GithubContribution::Commit(_) => commits_count += 1,
+            }
+        }
+        println!(
+            "{0: <40} {1: <10} {2: <10} {3: <10} {4: <10}",
+            format!("{}/{}", repo.org, repo.name),
+            issues_count,
+            reviews_count,
+            commits_count,
+            contributions.len(),
+        );
+    }
+    println!(
+        "Total Contributions: {}",
+        per_repo
+            .iter()
+            .fold(0, |sum, (_, contributions)| sum + contributions.len())
     );
 
     Ok(())

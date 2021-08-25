@@ -2,7 +2,7 @@ use crate::models::{commit::EnrichedCommit, Repo};
 use chrono::{offset::Utc, DateTime};
 use octocrab::models::{issues::Issue, pulls::Review, User};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Contribution {
     pub repo: Repo,
     pub contribution: GithubContribution,
@@ -22,7 +22,7 @@ impl Contribution {
 }
 
 /// GitHub Contribution as defined in the [GitHub documentation](https://docs.github.com/en/github/setting-up-and-managing-your-github-profile/managing-contribution-graphs-on-your-profile/viewing-contributions-on-your-profile#what-counts-as-a-contribution).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum GithubContribution {
     Commit(EnrichedCommit),
     Issue(Issue),

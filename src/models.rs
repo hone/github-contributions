@@ -2,7 +2,7 @@ use octocrab::models::User;
 use serde::Deserialize;
 use std::fmt;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
 pub struct Repo {
     pub org: String,
     pub name: String,
@@ -41,19 +41,19 @@ pub mod commit {
     use octocrab::models::repos::Commit;
     use serde::Deserialize;
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Clone, Debug, Deserialize)]
     pub struct EnrichedCommit {
         #[serde(flatten)]
         pub inner: Commit,
         pub commit: CommitObject,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Clone, Debug, Deserialize)]
     pub struct CommitObject {
         pub author: Author,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Clone, Debug, Deserialize)]
     pub struct Author {
         pub name: String,
         pub email: String,
