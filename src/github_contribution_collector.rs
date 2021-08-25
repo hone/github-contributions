@@ -131,6 +131,7 @@ impl GithubContributionCollector {
         company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
         repos: impl Iterator<Item = &config::Repo> + Clone + fmt::Debug,
         user_overrides: impl Iterator<Item = config::UserOverride> + fmt::Debug,
+        users_exclude: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
         params: Params<TzA, TzB>,
     ) -> Result<Vec<Output>, octocrab::Error>
     where
@@ -148,6 +149,7 @@ impl GithubContributionCollector {
             company_orgs,
             repos_re,
             user_overrides_map,
+            users_exclude,
             params,
         )
         .await
@@ -427,6 +429,7 @@ async fn output_stream<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
     company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
     repos: impl Iterator<Item = RepoRegex> + Clone + fmt::Debug,
     user_overrides: HashMap<String, config::UserOverride>,
+    users_exclude: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
     params: Params<TzA, TzB>,
 ) -> impl Stream<Item = Result<Output, octocrab::Error>>
 where
@@ -443,6 +446,10 @@ where
             let mut processed_contributions = contributions;
 
             if let Some(user) = maybe_user {
+                if users_exclude.clone().find(|login| user.login == login.as_ref()).is_some() {
+                    continue
+                }
+
                 let enriched_user;
                 if let Some(override_user) = user_overrides.get(&user.login) {
                     enriched_user = EnrichedUser {

@@ -63,19 +63,12 @@ async fn main() -> anyhow::Result<()> {
             config.company_organizations.iter(),
             config.repos.iter(),
             config.user_overrides.into_iter(),
+            config.users_exclude.iter(),
             params.clone(),
         )
         .await?;
 
-    outputs.retain(|output| {
-        !output.membership
-            && output.contributions.len() > 0
-            && output
-                .user
-                .as_ref()
-                .map(|u| u.inner.login != "dependabot[bot]")
-                .unwrap_or(false)
-    });
+    outputs.retain(|output| !output.membership);
     outputs.sort_by(|a, b| {
         b.contributions
             .len()
@@ -84,8 +77,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     println!(
-        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10} {5: <10}",
-        "handle", "salesforce", "issues", "reviews", "commits", "all"
+        "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10}",
+        "handle", "issues", "reviews", "commits", "all"
     );
     for output in outputs.iter() {
         let mut issues_count = 0;
@@ -100,13 +93,12 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         println!(
-            "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10} {5: <10}",
+            "{0: <20} {1: <10} {2: <10} {3: <10} {4: <10}",
             output
                 .user
                 .as_ref()
                 .map(|u| u.inner.login.as_str())
                 .unwrap_or("None"),
-            output.membership,
             issues_count,
             reviews_count,
             commits_count,

@@ -17,6 +17,8 @@ pub struct Config {
     pub orgs: Vec<Org>,
     #[serde(default)]
     pub user_overrides: Vec<UserOverride>,
+    #[serde(default)]
+    pub users_exclude: Vec<String>,
 }
 
 #[derive(Clone, Deserialize, Debug)]
