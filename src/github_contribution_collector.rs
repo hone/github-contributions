@@ -125,13 +125,18 @@ impl GithubContributionCollector {
     /// ## Notes
     /// `company_orgs` requires access from the GitHub Token provided.
     #[instrument(skip(self, contributions))]
-    pub async fn process_contributions(
+    pub async fn process_contributions<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
         &self,
         contributions: impl Iterator<Item = Contribution> + fmt::Debug,
         company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
         repos: impl Iterator<Item = &config::Repo> + Clone + fmt::Debug,
         user_overrides: impl Iterator<Item = config::UserOverride> + fmt::Debug,
-    ) -> Result<Vec<Output>, octocrab::Error> {
+        params: Params<TzA, TzB>,
+    ) -> Result<Vec<Output>, octocrab::Error>
+    where
+        TzA::Offset: fmt::Display,
+        TzB::Offset: fmt::Display,
+    {
         let repos_re = repos.map(|repo| RepoRegex::from(repo));
         let user_overrides_map: HashMap<String, config::UserOverride> = user_overrides
             .map(|user_override| (user_override.login.clone(), user_override))
@@ -143,6 +148,7 @@ impl GithubContributionCollector {
             company_orgs,
             repos_re,
             user_overrides_map,
+            params,
         )
         .await
         .collect::<Result<Vec<Output>, octocrab::Error>>()
@@ -415,13 +421,18 @@ async fn review_stream(
 
 /// Build an output stream
 #[instrument(skip(client))]
-async fn output_stream(
+async fn output_stream<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
     client: Arc<octocrab::Octocrab>,
     contributions: impl Iterator<Item = Contribution> + fmt::Debug,
     company_orgs: impl Iterator<Item = impl AsRef<str>> + Clone + fmt::Debug,
     repos: impl Iterator<Item = RepoRegex> + Clone + fmt::Debug,
     user_overrides: HashMap<String, config::UserOverride>,
-) -> impl Stream<Item = Result<Output, octocrab::Error>> {
+    params: Params<TzA, TzB>,
+) -> impl Stream<Item = Result<Output, octocrab::Error>>
+where
+    TzA::Offset: fmt::Display,
+    TzB::Offset: fmt::Display,
+{
     try_stream! {
         let orgs = company_orgs
             .map(|org| client.orgs(org.as_ref()));
@@ -446,6 +457,21 @@ async fn output_stream(
 
                 for config_repo in repos.clone() {
                     processed_contributions = processed_contributions.into_iter().filter(|contribution| {
+                        // filter out contributions out of the specified range
+                        if let Some(contribution_time) = contribution.created_at() {
+                            if let Some(since) = params.since.as_ref() {
+                                if contribution_time < since.with_timezone(&contribution_time.timezone()) {
+                                    return false;
+                                }
+                            }
+                            if let Some(until) = params.until.as_ref() {
+                                if contribution_time >= until.with_timezone(&contribution_time.timezone()) {
+                                    return false;
+                                }
+                            }
+                        }
+
+                        // filter out users explicitly called to be excluded
                         if config_repo.repo == contribution.repo {
                             // if the user matches an org that matches our exclude, don't keep this
                             // contribution

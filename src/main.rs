@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         since: Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0)),
         until: Some(Utc.ymd(2021, 8, 1).and_hms(0, 0, 0)),
     };
-    let contributions = contributions_stream(client.clone(), config.repos.iter(), params)
+    let contributions = contributions_stream(client.clone(), config.repos.iter(), params.clone())
         .await
         .collect::<Result<Vec<Vec<Contribution>>, octocrab::Error>>()
         .await?
@@ -63,15 +63,10 @@ async fn main() -> anyhow::Result<()> {
             config.company_organizations.iter(),
             config.repos.iter(),
             config.user_overrides.into_iter(),
+            params.clone(),
         )
         .await?;
 
-    for output in outputs.iter_mut() {
-        output.contributions.retain(|contribution| {
-            contribution.created_at() >= Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0))
-                && contribution.created_at() < Some(Utc.ymd(2021, 8, 1).and_hms(0, 0, 0))
-        });
-    }
     outputs.retain(|output| {
         !output.membership
             && output.contributions.len() > 0
