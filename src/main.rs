@@ -1,11 +1,12 @@
 use async_stream::try_stream;
-use chrono::offset::{TimeZone, Utc};
+use chrono::offset::TimeZone;
 use futures::{future::join_all, Stream};
 use github_contributions::{
-    config::Config, contribution::GithubContribution, github_contribution_collector::Params,
+    cli, config::Config, contribution::GithubContribution, github_contribution_collector::Params,
     models::Repo, Contribution, GithubContributionCollector,
 };
 use std::{collections::HashMap, fmt, sync::Arc};
+use structopt::StructOpt;
 use tokio_stream::StreamExt;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -38,17 +39,17 @@ async fn main() -> anyhow::Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let args = std::env::args().collect::<Vec<String>>();
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| {
         eprintln!("Please provide a GITHUB_TOKEN");
 
         std::process::exit(1);
     });
-    let config: Config = toml::from_str(&std::fs::read_to_string(&args[1])?)?;
+    let args = cli::Opt::from_args();
+    let config: Config = toml::from_str(&std::fs::read_to_string(&args.config)?)?;
     let client = Arc::new(GithubContributionCollector::new(Some(github_token))?);
     let params = Params {
-        since: Some(Utc.ymd(2021, 5, 1).and_hms(0, 0, 0)),
-        until: Some(Utc.ymd(2021, 8, 1).and_hms(0, 0, 0)),
+        since: args.start,
+        until: args.end,
     };
     let contributions = contributions_stream(client.clone(), config.repos.iter(), params.clone())
         .await

@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod config;
 pub mod contribution;
 pub mod github_contribution_collector;
