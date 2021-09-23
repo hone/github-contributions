@@ -1,8 +1,11 @@
 use octocrab::models::User;
 use serde::Deserialize;
-use std::fmt;
+use std::{
+    cmp::{PartialEq, PartialOrd},
+    fmt,
+};
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Deserialize, PartialEq, PartialOrd, Eq, Hash)]
 pub struct Repo {
     pub org: String,
     pub name: String,
@@ -14,6 +17,12 @@ impl Repo {
             org: org.into(),
             name: name.into(),
         }
+    }
+}
+
+impl fmt::Display for Repo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}/{}", self.org, self.name)
     }
 }
 

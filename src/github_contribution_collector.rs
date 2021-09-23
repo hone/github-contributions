@@ -3,6 +3,7 @@ use crate::{
     models::{self, commit::EnrichedCommit, EnrichedUser},
     Contribution,
 };
+use async_recursion::async_recursion;
 use async_stream::try_stream;
 use chrono::{offset::TimeZone, DateTime};
 use futures::Stream;
@@ -17,9 +18,11 @@ use octocrab::{
 };
 use regex::Regex;
 use serde::de::DeserializeOwned;
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, fmt, marker::Send, sync::Arc};
 use tokio_stream::StreamExt;
 use tracing::{info, instrument};
+
+const MAX_TRIES: usize = 5;
 
 /// Common Parameters for the GitHub API
 #[derive(Clone, Debug)]
@@ -163,36 +166,34 @@ impl GithubContributionCollector {
     #[instrument(skip(self))]
     pub async fn contributions<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
         &self,
-        repo_org: impl AsRef<str> + fmt::Debug,
-        repo: impl AsRef<str> + fmt::Debug,
+        repo: &models::Repo,
         params: &Params<TzA, TzB>,
     ) -> Result<Vec<Contribution>, octocrab::Error>
     where
         TzA::Offset: fmt::Display,
         TzB::Offset: fmt::Display,
     {
-        info!(
-            "Fetching contributions: {}/{}",
-            repo_org.as_ref(),
-            repo.as_ref()
-        );
+        info!("Fetching contributions: {}", repo);
         let (issues, reviews, commits) = tokio::join!(
-            self.issues(repo_org.as_ref(), repo.as_ref()),
-            self.reviews(repo_org.as_ref(), repo.as_ref()),
-            self.commits(repo_org.as_ref(), repo.as_ref(), params),
+            self.issues(repo, params),
+            self.reviews(repo),
+            self.commits(repo, params),
         );
 
-        let contributions =
-            issues?
-                .into_iter()
-                .map(|issue| Contribution::new(repo_org.as_ref(), repo.as_ref(), issue.into()))
-                .chain(reviews?.into_iter().map(|review| {
-                    Contribution::new(repo_org.as_ref(), repo.as_ref(), review.into())
-                }))
-                .chain(commits?.into_iter().map(|commit| {
-                    Contribution::new(repo_org.as_ref(), repo.as_ref(), commit.into())
-                }))
-                .collect();
+        let contributions = issues?
+            .into_iter()
+            .map(|issue| Contribution::new(&repo.org, &repo.name, issue.into()))
+            .chain(
+                reviews?
+                    .into_iter()
+                    .map(|review| Contribution::new(&repo.org, &repo.name, review.into())),
+            )
+            .chain(
+                commits?
+                    .into_iter()
+                    .map(|commit| Contribution::new(&repo.org, &repo.name, commit.into())),
+            )
+            .collect();
 
         Ok(contributions)
     }
@@ -201,105 +202,79 @@ impl GithubContributionCollector {
     #[instrument(skip(self))]
     pub async fn commits<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
         &self,
-        repo_org: impl AsRef<str> + fmt::Debug,
-        repo: impl AsRef<str> + fmt::Debug,
+        repo: &models::Repo,
         params: &Params<TzA, TzB>,
     ) -> Result<Vec<EnrichedCommit>, octocrab::Error>
     where
         TzA::Offset: fmt::Display,
         TzB::Offset: fmt::Display,
     {
-        let page: Page<EnrichedCommit> = self
-            .client
-            .get(
-                format!("/repos/{}/{}/commits", repo_org.as_ref(), repo.as_ref()),
-                params.to_params().as_ref(),
-            )
-            .await?;
-
-        info!(pages = ?page.number_of_pages(), "type" = "commits");
-
-        Ok(self.process_pages(page).await?)
+        match commit_page(self.client.clone(), repo, params).await? {
+            Some(page) => {
+                info!(pages = ?page.number_of_pages(), "type" = "commits");
+                Ok(process_pages(&self.client, page).await?)
+            }
+            None => Ok(vec![]),
+        }
     }
 
     /// Collect all contributions from issues associated with this repo.
     #[instrument(skip(self))]
-    pub async fn issues(
+    pub async fn issues<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
         &self,
-        repo_org: impl AsRef<str> + fmt::Debug,
-        repo: impl AsRef<str> + fmt::Debug,
-    ) -> Result<Vec<Issue>, octocrab::Error> {
-        let page = self
-            .client
-            .issues(repo_org.as_ref(), repo.as_ref())
-            .list()
-            .sort(params::issues::Sort::Created)
-            .direction(params::Direction::Descending)
-            .send()
-            .await?;
+        repo: &models::Repo,
+        params: &Params<TzA, TzB>,
+    ) -> Result<Vec<Issue>, octocrab::Error>
+    where
+        TzA::Offset: fmt::Display,
+        TzB::Offset: fmt::Display,
+    {
+        match issues_page(self.client.clone(), repo, params).await? {
+            Some(page) => {
+                info!(pages = ?page.number_of_pages(), "type" = "issues");
 
-        info!(pages = ?page.number_of_pages(), "type" = "issues");
-
-        Ok(self.process_pages(page).await?)
+                Ok(process_pages(&self.client, page).await?)
+            }
+            None => Ok(vec![]),
+        }
     }
 
     /// Collect all contributions reviews associated with this repo.
     #[instrument(skip(self))]
-    pub async fn reviews(
-        &self,
-        repo_org: impl AsRef<str> + fmt::Debug,
-        repo: impl AsRef<str> + fmt::Debug,
-    ) -> Result<Vec<Review>, octocrab::Error> {
-        let pull_handler = self.client.pulls(repo_org.as_ref(), repo.as_ref());
-        let page = pull_handler
-            .list()
-            .sort(params::pulls::Sort::Created)
-            .direction(params::Direction::Descending)
-            .send()
-            .await?;
+    pub async fn reviews(&self, repo: &models::Repo) -> Result<Vec<Review>, octocrab::Error> {
+        match pull_request_page(self.client.clone(), repo).await? {
+            Some(page) => {
+                info!(pages = ?page.number_of_pages(), "type" = "pull_requests");
+                let pull_requests = process_pages(&self.client, page).await?;
 
-        info!(pages = ?page.number_of_pages(), "type" = "pull_requests");
+                let reviews =
+                    review_stream(self.client.clone(), pull_requests.into_iter(), repo.clone())
+                        .await
+                        .collect::<Result<Vec<Vec<Review>>, octocrab::Error>>()
+                        .await?
+                        .into_iter()
+                        .flatten()
+                        .collect();
 
-        let pull_requests = self.process_pages(page).await?;
-
-        let reviews = review_stream(
-            self.client.clone(),
-            pull_requests.into_iter(),
-            repo_org,
-            repo,
-        )
-        .await
-        .collect::<Result<Vec<Vec<Review>>, octocrab::Error>>()
-        .await?
-        .into_iter()
-        .flatten()
-        .collect();
-
-        Ok(reviews)
-    }
-
-    /// Get all the items from the current page until the end
-    #[instrument(skip(self, page))]
-    async fn process_pages<T: DeserializeOwned + fmt::Debug>(
-        &self,
-        mut page: Page<T>,
-    ) -> Result<Vec<T>, octocrab::Error> {
-        let mut items = Vec::new();
-
-        loop {
-            for item in page.take_items() {
-                items.push(item);
+                Ok(reviews)
             }
-
-            let next_page_option = self.client.get_page::<T>(&page.next).await?;
-            if let Some(next_page) = next_page_option {
-                page = next_page;
-            } else {
-                break;
-            }
+            None => Ok(vec![]),
         }
+    }
+}
 
-        Ok(items)
+#[async_recursion]
+async fn retry_get_page<T: 'async_recursion + DeserializeOwned + fmt::Debug + Send>(
+    client: &octocrab::Octocrab,
+    url: &Option<url::Url>,
+    tries_left: usize,
+) -> octocrab::Result<Option<Page<T>>> {
+    let result = client.get_page::<T>(url).await;
+
+    if result.is_err() && tries_left >= 2 {
+        retry_get_page(client, url, tries_left - 1).await
+    } else {
+        result
     }
 }
 
@@ -380,7 +355,7 @@ async fn enrich_user(
 
 /// Get all the items from the current page until the end
 #[instrument(skip(client, page))]
-async fn process_pages<T: DeserializeOwned + fmt::Debug>(
+async fn process_pages<T: DeserializeOwned + fmt::Debug + Send>(
     client: &octocrab::Octocrab,
     mut page: Page<T>,
 ) -> Result<Vec<T>, octocrab::Error> {
@@ -391,7 +366,7 @@ async fn process_pages<T: DeserializeOwned + fmt::Debug>(
             items.push(item);
         }
 
-        let next_page_option = client.get_page::<T>(&page.next).await?;
+        let next_page_option = retry_get_page(&client, &page.next, MAX_TRIES).await?;
         if let Some(next_page) = next_page_option {
             page = next_page;
         } else {
@@ -403,16 +378,15 @@ async fn process_pages<T: DeserializeOwned + fmt::Debug>(
 }
 
 /// Stream of Pull Request Reviews
-#[instrument(skip(client))]
+#[instrument(skip(client, pull_requests))]
 async fn review_stream(
     client: Arc<octocrab::Octocrab>,
-    pull_requests: impl Iterator<Item = PullRequest> + fmt::Debug,
-    repo_org: impl AsRef<str> + fmt::Debug,
-    repo: impl AsRef<str> + fmt::Debug,
+    pull_requests: impl Iterator<Item = PullRequest>,
+    repo: models::Repo,
 ) -> impl Stream<Item = Result<Vec<Review>, octocrab::Error>> {
     try_stream! {
         for pull_request in pull_requests {
-            let pull_handler = &client.pulls(repo_org.as_ref(), repo.as_ref());
+            let pull_handler = &client.pulls(&repo.org, &repo.name);
             let page = pull_handler.list_reviews(pull_request.number).await?;
             let items = process_pages(&client, page).await?;
 
@@ -515,6 +489,111 @@ where
                 membership,
                 contributions: processed_contributions,
             };
+        }
+    }
+}
+
+#[instrument(skip(client))]
+async fn issues_page<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
+    client: Arc<octocrab::Octocrab>,
+    repo: &models::Repo,
+    params: &Params<TzA, TzB>,
+) -> Result<Option<Page<Issue>>, octocrab::Error>
+where
+    TzA::Offset: fmt::Display,
+    TzB::Offset: fmt::Display,
+{
+    match client
+        .get(
+            format!("/repos/{}/issues", repo),
+            params.to_params().as_ref(),
+        )
+        .await
+    {
+        Ok(page) => Ok(Some(page)),
+        Err(err) => {
+            match err {
+                // for cases when the the issues page is turned off
+                octocrab::Error::GitHub { source, backtrace } => {
+                    if source.documentation_url
+                        == "https://docs.github.com/rest/reference/issues#list-repository-issues"
+                    {
+                        eprintln!("Could not fetch issues: {}", &repo);
+                        Ok(None)
+                    } else {
+                        Err(octocrab::Error::GitHub { source, backtrace })
+                    }
+                }
+                _ => Err(err),
+            }
+        }
+    }
+}
+
+async fn pull_request_page(
+    client: Arc<octocrab::Octocrab>,
+    repo: &models::Repo,
+) -> Result<Option<Page<PullRequest>>, octocrab::Error> {
+    let pull_handler = client.pulls(&repo.org, &repo.name);
+    match pull_handler
+        .list()
+        .sort(params::pulls::Sort::Created)
+        .direction(params::Direction::Descending)
+        .send()
+        .await
+    {
+        Ok(page) => Ok(Some(page)),
+        Err(err) => {
+            match err {
+                // for cases when the the issues page is turned off
+                octocrab::Error::GitHub { source, backtrace } => {
+                    if source.documentation_url
+                        == "https://docs.github.com/rest/reference/pulls#list-pull-requests"
+                    {
+                        eprintln!("Could not fetch pull requests: {}", &repo);
+                        Ok(None)
+                    } else {
+                        Err(octocrab::Error::GitHub { source, backtrace })
+                    }
+                }
+                _ => Err(err),
+            }
+        }
+    }
+}
+
+async fn commit_page<TzA: TimeZone + fmt::Debug, TzB: TimeZone + fmt::Debug>(
+    client: Arc<octocrab::Octocrab>,
+    repo: &models::Repo,
+    params: &Params<TzA, TzB>,
+) -> Result<Option<Page<EnrichedCommit>>, octocrab::Error>
+where
+    TzA::Offset: fmt::Display,
+    TzB::Offset: fmt::Display,
+{
+    match client
+        .get(
+            format!("/repos/{}/{}/commits", repo.org, repo.name),
+            params.to_params().as_ref(),
+        )
+        .await
+    {
+        Ok(page) => Ok(Some(page)),
+        Err(err) => {
+            match err {
+                // for cases when the the commits page is turned off
+                octocrab::Error::GitHub { source, backtrace } => {
+                    if source.documentation_url
+                        == "https://docs.github.com/rest/reference/repos#list-commits"
+                    {
+                        eprintln!("Could not fetch commits: {}", &repo);
+                        Ok(None)
+                    } else {
+                        Err(octocrab::Error::GitHub { source, backtrace })
+                    }
+                }
+                _ => Err(err),
+            }
         }
     }
 }

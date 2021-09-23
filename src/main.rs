@@ -23,7 +23,7 @@ where
         let mut tasks = vec![];
         // queue up all tasks first
         for repo in repos {
-            tasks.push(client.contributions(&repo.repo.org, &repo.repo.name, &params));
+            tasks.push(client.contributions(&repo.repo, &params));
         }
         for result in join_all(tasks).await {
             let contributions = result?;
@@ -129,7 +129,10 @@ async fn main() -> anyhow::Result<()> {
         "{0: <40} {1: <10} {2: <10} {3: <10} {4: <10}",
         "repo", "issues", "reviews", "commits", "all"
     );
-    for (repo, contributions) in per_repo.iter() {
+    let mut per_repo_sorted = per_repo.into_iter().collect::<Vec<_>>();
+    per_repo_sorted.sort_by(|(repo_a, _), (repo_b, _)| repo_a.partial_cmp(&repo_b).unwrap());
+
+    for (repo, contributions) in per_repo_sorted.iter() {
         let mut issues_count = 0;
         let mut reviews_count = 0;
         let mut commits_count = 0;
@@ -152,7 +155,7 @@ async fn main() -> anyhow::Result<()> {
     }
     println!(
         "Total Contributions: {}",
-        per_repo
+        per_repo_sorted
             .iter()
             .fold(0, |sum, (_, contributions)| sum + contributions.len())
     );
